@@ -148,3 +148,4 @@ The spec is included in this repository in the `rfc/` subdirectory.
 - [Sequoia-PGP (Rust/libnettle)](https://sequoia-pgp.org/)
 - [pbp "pretty bad protocol" (Rust/libdalek)](https://github.com/withoutboats/pbp)
   - see also the author's [git commit signing tool](https://github.com/withoutboats/bpb)
+- [John Marino's "Classified" (Ada)](https://github.com/jrmarino/classified/tree/master/)
