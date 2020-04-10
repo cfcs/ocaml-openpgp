@@ -8,7 +8,7 @@
    - tgpg: https://github.com/gpg/tgpg/blob/master/src/cryptglue.c#L301
 *)
 
-open Nocrypto.Cipher_block.AES.ECB
+open Mirage_crypto.Cipher_block.AES.ECB
 open Rresult
 
 let of_secret cs =
@@ -21,7 +21,7 @@ let of_secret cs =
 type state =
   { fr : Cs.t ; (* in reverse order*)
     key : key ;
-    mdc : Nocrypto.Hash.SHA1.t ;
+    mdc : Mirage_crypto.Hash.SHA1.t ;
     prepend : Cs.t option ;
     skip : int ;
   }
@@ -35,7 +35,10 @@ type _ t =
   | Decryption : state -> [`decryption] t
   | Encryption : state -> [`encryption] t
 
-let hash t data = Nocrypto.Hash.SHA1.feed t data
+let hash_mdc data t =
+  Mirage_crypto.Hash.SHA1.feed t data
+let hash state data =
+  {state with mdc = hash_mdc data state.mdc}
 
 let mdc_header = Cstruct.of_string "\xD3\x14"
 
@@ -51,7 +54,7 @@ let initialize ~key =
   (* 1. The feedback register (FR) is set to the IV, which is all zeros. *)
   Ok { fr = Cs.create block_size ;
        key ;
-       mdc = Nocrypto.Hash.SHA1.empty ;
+       mdc = Mirage_crypto.Hash.SHA1.empty ;
        prepend = None ;
        skip = 0 ;
      }
@@ -63,8 +66,8 @@ let calc_fr_e state : Cs.t =
 let update_mdc (type direction) (state : direction t) plain  : direction t =
   let plain_cs = Cs.to_cstruct plain in
   match state with
-  | Encryption t -> Encryption {t with mdc = hash t.mdc plain_cs }
-  | Decryption t -> Decryption {t with mdc = hash t.mdc plain_cs }
+  | Encryption t -> Encryption (hash t plain_cs)
+  | Decryption t -> Decryption (hash t plain_cs)
 
 let pending (type direction) (t : direction t) =
   match begin match t with
@@ -104,7 +107,7 @@ let init_encryption ?g ~key
        the plaintext to produce C[1] through C[BS], the first BS octets
        of ciphertext,
     4. FR is loaded with C[1] through C[BS]: *)
-  let random_data = Nocrypto.Rng.generate ?g block_size |> Cs.of_cstruct in
+  let random_data = Mirage_crypto_rng.generate ?g block_size |> Cs.of_cstruct in
 
   enc (Encryption state) random_data >>= fun (Encryption state, iv_first) ->
 
@@ -177,7 +180,7 @@ let finalize_decryption (Decryption state) ciphertext_opt =
   *)
 
   (* save MDC state to avoid including the target MDC in our computed checksum*)
-  let mdc = state.mdc in
+  let orig_mdc = state.mdc in
   let skip = state.skip in
 
   let rec loop ((Decryption _) as t) mdc_acc ciphertext =
@@ -204,12 +207,16 @@ let finalize_decryption (Decryption state) ciphertext_opt =
   let target_mdc = Cs.to_cstruct target_mdc in
   let computed_mdc =
     Cstruct.append mdc_header @@
-    ( hash mdc (Cs.to_cstruct plain) |> fun mdc ->
+    ( hash_mdc (Cs.to_cstruct plain) orig_mdc
       (* Hash the MDC header: *)
-      hash mdc mdc_header
-      |> Nocrypto.Hash.SHA1.get )
+      |> hash_mdc mdc_header
+      |> Mirage_crypto.Hash.SHA1.get )
   in
-  Logs.debug (fun m -> m "mdc header: %a@,target mdc: %a@,computed_mdc: %a"
+  Logs.debug (fun m -> m "@[<v>mdc header: %a@,target_mdc:@,%a@,\
+                          computed_mdc:@,%a@,\
+                          (if target_mdc does not start with mdc_header, we@ \
+                          are likely parsing something wrong. unfortunately@ \
+                          failing early exposes a decryption oracle.)@]"
                  Cstruct.hexdump_pp mdc_header
                  Cstruct.hexdump_pp target_mdc
                  Cstruct.hexdump_pp computed_mdc
@@ -243,9 +250,13 @@ let finalize_encryption (Encryption state) plaintext_opt =
     Cs.concat [ cs_of_opt state.prepend ;
                 cs_of_opt plaintext_opt ]
   in
-  let mdc = hash state.mdc (Cs.to_cstruct plaintext) |> fun mdc ->
-            hash mdc mdc_header
-            |> Nocrypto.Hash.SHA1.get |> Cs.of_cstruct in
+  let mdc = hash_mdc (Cs.to_cstruct plaintext) state.mdc
+          |> hash_mdc mdc_header
+          |> Mirage_crypto.Hash.SHA1.get |> Cs.of_cstruct in
+  (*let mdc = hash state.mdc (Cs.to_cstruct plaintext) ;
+            hash state.mdc mdc_header ;
+    Mirage_crypto.Hash.SHA1.get state.mdc |> Cs.of_cstruct in
+  *)
   (* TODO could add the min-stuff to [get_block] and replace
      the stuff below with a call to [full] (with a check for [block_size]
      in [encrypt_streaming] instead, or keeping internal shift.)*)

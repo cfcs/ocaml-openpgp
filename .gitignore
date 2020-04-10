@@ -1,7 +1,9 @@
-*.ml~
 .*.swp
 \#*.*\#
 _build
 opgp
 opgp-git
 openpgp.install
+.merlin
+*~
+

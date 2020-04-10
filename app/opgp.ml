@@ -39,7 +39,7 @@ let file_cb filename : unit -> ('a,'b)result =
     *)
 
 let do_verify _ current_time pk_file detached_file target_file
-  : (unit, [ `Msg of string ]) Result.result =
+  : (unit, [ `Msg of string ]) result =
   let res =
   cs_of_file pk_file >>= fun pk_content ->
   cs_of_file detached_file >>= fun detached_content ->
@@ -119,9 +119,26 @@ let do_sign _ g current_time secret_file target_file =
   cs_of_file target_file >>= fun target_content ->
   Openpgp.decode_secret_key_block ?g ~current_time sk_cs
   >>| Types.log_msg (fun m -> m "parsed secret key") >>= fun (tsk,_) ->
-  (* TODO pick hash algo from Preferred_hash_algorithms *)
+  begin match tsk.Openpgp.Signature.uids with
+    | hd :: _tl -> Ok hd (* TODO allow user to select? *)
+    | [] -> R.error_msgf "TSK has no UIDs"
+  end >>= fun signing_uid ->
+  begin match signing_uid.Openpgp.Signature.certifications with
+    (* Figure out which hash algo we prefer *)
+    | [first] ->
+      (* TODO handle scenario with multiple self-sigs ? *)
+      let open Openpgp.Signature in
+      (SubpacketMap.get Types.Preferred_hash_algorithms
+         first.subpacket_data >>= function
+       | Preferred_hash_algorithms (x::_) -> Ok x
+       | _ -> Error (`Msg "")
+      ) |> R.ignore_error ~use:(fun _ -> Types.SHA1) (* fallback to default *)
+      |> R.ok
+    | [] | _ -> R.error_msgf "tsk uid has <> 1 certification"
+  end >>= fun signing_hash_algo ->
+  (* TODO add (Signers_user_id signing_uid) sig subpacket *)
   Openpgp.Signature.sign_detached_cs ~current_time tsk
-    Types.SHA384 target_content >>= fun sig_t ->
+    signing_hash_algo target_content >>= fun sig_t ->
   Openpgp.serialize_packet Types.V4 (Openpgp.Signature_type sig_t)
   >>= Openpgp.encode_ascii_armor Types.Ascii_signature
   >>| Cs.to_string >>= fun encoded ->
@@ -136,9 +153,14 @@ let do_decrypt _ rng current_time secret_file target_file =
     ( Openpgp.decode_message target_content
       |>  R.reword_error Types.msg_of_error)
     >>= Openpgp.decrypt_message ~current_time ~secret_key
-    >>| fun ({ Literal_data_packet.filename ; _}, decrypted) ->
-    Logs.info (fun m -> m "Suggested filename: %S" filename) ;
-    print_string decrypted
+    >>| fun packets ->
+    List.iter
+      (function
+        | `Literal ({ Literal_data_packet.filename ; _}, decrypted) ->
+          Logs.info (fun m -> m "Suggested filename: %S" filename) ;
+          print_string decrypted
+        | _ -> Logs.err (fun m -> m "%s: got some other packets" __LOC__)
+      ) packets
   ) |> R.reword_error Types.msg_of_error
 
 let do_mail_decrypt _ rng current_time secret_file target_file =
@@ -208,12 +230,16 @@ let do_mail_decrypt _ rng current_time secret_file target_file =
   |> fun abc ->
   Logs.info (fun m -> m "Potential receiver UIDs: %a@,"
                 Fmt.(list ~sep:(unit " ;; ") string) abc);
+
   begin match tl_content with | [] -> R.error_msgf "TODO" | x::tl -> Ok (x,tl)
   end >>= fun ((content, _, _message),tl_content) ->
   Logs.debug (fun m -> m "@.content_msg: %a@." Content.pp content);
-  begin match content.Content.ty with
+  begin match content.Content.ty, message with
     | {ContentType.ty = `Application ; subty = `Iana_token "pgp-encrypted"
-      ; parameters = [] } -> Ok ()
+      ; parameters = [] }, (* verify PGP/MIME version 1: *)
+      Message.(Multipart(ax,b,[ (x,y,Some (PDiscrete Raw ("Version: 1\n")) );
+                                _])) ->
+      Ok ()
     | _ -> R.error_msgf "well PART 1 this is not for us: @,%a"
              ContentType.pp content.Content.ty
   end >>= fun () ->
@@ -221,26 +247,61 @@ let do_mail_decrypt _ rng current_time secret_file target_file =
 
   begin match tl_content with | [] -> R.error_msgf "TODO" | x::tl -> Ok (x,tl)
   end >>= fun ((content, _, message),tl_content) ->
-  Fmt.pr "@.content_msg2: %a@." Content.pp content;
-  begin match content.Content.ty, content.Content.description with
+  Logs.debug (fun m -> m "@.content_msg2: %a@." Content.pp content);
+  let content_disposition = try
+      Content.Map.find "Disposition" content.Content.content
+    with _ -> [] in
+  Logs.debug (fun m -> m "unstructed: %d = %d %a"
+                 (List.length content_disposition)
+                 ((try List.hd content_disposition with _ -> []) |> List.length)
+                 (Fmt.list Content.pp_unstructured) content_disposition) ;
+  begin match Content.(content.ty,content.description, content_disposition) with
     | {ContentType.ty = `Application ; subty = `Iana_token "octet-stream"
       ; parameters = ["name" , `Token "encrypted.asc"] },
-      (* ^-- question for dinosaure: may this could be a Set?*)
       Some [`WSP; `Text "OpenPGP";
             `WSP; `Text "encrypted";
-            `WSP; `Text "message"] -> Ok ()
+            `WSP; `Text "message"],
+      ([[`WSP;`Text "inline;";`CRLF;`WSP;`Text "filename=encrypted.asc"]]) ->
+      Ok () (* GPGTools on OSX *)
+    | {ContentType.ty = `Application ; subty = `Iana_token "octet-stream"
+      ; parameters = [] },
+      None, [[`WSP; `Text "attachment;"; `WSP; `Text {|filename="msg.asc"|}]] ->
+      Ok () (* Thunderbird / Enigmail ? *)
+
     | _ -> Error (`Msg "well PART 2 this is not for us")
   end >>= fun () ->
 
   begin match message with
     | Some Message.PDiscrete Message.Raw raw_msg ->
       Logs.debug (fun m -> m "Got PGP message body");
+      Logs.debug (fun m -> m "msg body:@.%s@." raw_msg);
       Openpgp.decode_message ?g:rng ~armored:true (Cs.of_string raw_msg)
+      (* TODO if we get `Incomplete_packet here we may want to read more
+         MIME parts? *)
       |> R.reword_error Types.msg_of_error
       >>= Openpgp.decrypt_message ~current_time ~secret_key
       |> R.reword_error Types.msg_of_error
-      >>= fun ({Literal_data_packet.filename ; _},b) ->
-      Logs.app (fun m -> m "DECRYPTED %S: %s" filename b);
+      >>= fun packets ->
+      List.iter (
+        begin function
+          | `Literal ({Literal_data_packet.filename ; _}, plaintext) ->
+            (if filename <> "" then Logs.info (fun m -> m "Filename: %S" filename));
+            Logs.warn (fun m -> m "TODO 'plaintext' here is MIME");
+            Logs.app (fun m -> m "DECRYPTED:@.%S" plaintext)
+          | `Compressed lst ->
+            List.iter (begin function
+                | `Literal (_, plaintext) ->
+                  Logs.app (fun m -> m "DECRYPTED: %S" plaintext)
+                | `Compressed _ ->
+                  Logs.err (fun m -> m "COMPRESSED")
+                | `Signature _ ->
+                  Logs.warn (fun m -> m "SIGNATURE")
+                | `One_pass_signature _ ->
+                  Logs.warn (fun m -> m "ONE-PASS SIG")
+              end) lst ;
+            Logs.warn (fun m -> m "WHAHASDDS")
+        end) packets ;
+      Logs.debug (fun m -> m "fuck! %d" @@ List.length packets);
       Ok ()
     | _ -> R.error_msgf "Unable to decode MIME part"
   end >>= fun () ->

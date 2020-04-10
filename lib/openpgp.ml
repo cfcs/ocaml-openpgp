@@ -36,9 +36,8 @@ let encode_ascii_armor (armor_type:ascii_packet_type) (buf : Cs.t)
     Cs.split_result buf_tl (min (Cs.len buf_tl) 54)
     >>= fun (chunk, next_tl) ->
     if Cs.len chunk <> 0 then
-      base64_encoded (Cs.of_cstruct
-                        (Nocrypto.Base64.encode
-                           (Cs.to_cstruct chunk)) :: acc) next_tl
+      Base64.encode (Cs.to_string chunk) >>= fun b64ch ->
+      base64_encoded (Cs.of_string (b64ch) :: acc) next_tl
     else
       match acc with
       | [] -> Ok (Cs.create 0) (* if input was empty, return empty output *)
@@ -48,8 +47,10 @@ let encode_ascii_armor (armor_type:ascii_packet_type) (buf : Cs.t)
         Ok (Cs.concat @@ List.rev (acc_hd::end_lines))
   in
   let cs_armor_magic = string_of_ascii_packet_type armor_type |> Cs.of_string in
-  base64_encoded [] buf >>| fun encoded_buf ->
-    Cs.concat
+  base64_encoded [] buf >>= fun encoded_buf ->
+  Base64.encode
+    (crc24 buf |> Cs.to_string) >>| Cs.of_string >>| fun encoded_crc ->
+  Cs.concat
     [ Cs.of_string "-----BEGIN PGP " ; cs_armor_magic ; Cs.of_string "-----\r\n"
       (*; TODO headers*)
     ; newline (* <-- end of headers*)
@@ -58,9 +59,7 @@ let encode_ascii_armor (armor_type:ascii_packet_type) (buf : Cs.t)
     ; newline
 
     (* CRC24 checksum: *)
-    ; Cs.of_string "=";
-      Nocrypto.Base64.encode
-        (crc24 buf |> Cs.to_cstruct) |> Cs.of_cstruct ; newline
+    ; Cs.of_string "="; encoded_crc ; newline
 
     (* END / footer: *)
     ; Cs.of_string "-----END PGP " ; cs_armor_magic ; Cs.of_string "-----\r\n"
@@ -120,11 +119,11 @@ let decode_ascii_armor ~allow_trailing (buf : Cs.t) =
 
   let rec decode_body acc tl : (Cs.t*Cs.t,[> `Msg of string]) result =
     let b64_decode cs =
-      Nocrypto.Base64.decode (Cs.to_cstruct cs)
-      |> R.of_option ~none:(fun()->
-          error_msg (fun m -> m "Cannot base64-decode body line: %a"
-                        Cs.pp_hex cs ))
-      >>| Cs.of_cstruct
+      Base64.decode (Cs.to_string cs)
+      |> R.reword_error (fun _e ->
+          R.msgf "Cannot base64-decode body line: %a"
+            Cs.pp_hex cs )
+      >>| Cs.of_string
     in
     begin match Cs.next_line ~max_length:76 tl with
       | `Last_line not_end_cs ->
@@ -197,6 +196,8 @@ let decode_ascii_armor ~allow_trailing (buf : Cs.t) =
 let parse_packet_body ?g packet_tag pkt_body
   : (packet_type, [> `Msg of string | `Incomplete_packet ]) result =
   begin match packet_tag with
+    | One_pass_signature_tag ->
+      R.error_msg "One-Pass Signature packet not implemented in this context"
     | Compressed_data_packet_tag ->
       R.error_msg "Compressed data packet not allowed in this context."
     | Literal_data_packet_tag ->
@@ -298,7 +299,7 @@ let serialize_packet version (pkt:packet_type) =
                                        ; serialize_packet_length body_cs ]
   end >>| fun header_cs ->
   Logs.debug
-    (fun m -> m "serialized packet@[<v>@ %a@ header: %a@ contents: %a@]"
+    (fun m -> m "serialized packet@     @[<v>%a@ header: %a@ contents:@   @[<v>%a@]@]"
         pp_packet pkt
         Cs.pp_hex header_cs
         Cs.pp_hex body_cs );
@@ -311,7 +312,12 @@ let next_packet (full_buf : Cs.t) :
   consume_packet_header full_buf
   >>= begin function
   | { length_type ; packet_tag; _ } , pkt_header_tl ->
-    consume_packet_length length_type pkt_header_tl
+    begin match consume_packet_length length_type pkt_header_tl with
+      | Error `Msg _ as err ->
+        err |> R.reword_error_msg
+          (fun _ -> R.msgf "packet_tag: %a" pp_packet_tag packet_tag)
+      | whatever -> whatever
+    end
     >>| fun (pkt_body, next_packet) ->
     Some (packet_tag , pkt_body, next_packet)
   end
@@ -406,11 +412,12 @@ struct
         begin match Signature_packet.SubpacketMap.get Key_usage_flags
                       signature.subpacket_data with
         | Ok Key_usage_flags kuf -> kuf_cb kuf
+        | Ok _ -> failwith "TODO GMAP"
         | Error _ -> true (* if no KUF then assume it's ok *)
         end) certifications
 
   let can_encrypt = key_can_be_used_in_context Public_key_packet.can_encrypt
-      (fun kuf -> kuf.encrypt_communications)
+      (fun kuf -> kuf.encrypt_storage)
 
   let can_sign = key_can_be_used_in_context Public_key_packet.can_sign
       (fun kuf -> kuf.sign_data)
@@ -579,13 +586,13 @@ struct
     in
     true_or_error (public_key_algorithm <> RSA_encrypt_only)
       (fun m -> m "can't sign with rsa_encrypt_only") >>= fun () ->
-    (* add Signature_creation_time with [current_time] if no creation time: *)
     let signature_subpackets :signature_subpacket SubpacketMap.t =
       let v4_fp = pk.Public_key_packet.v4_fingerprint in
-      SubpacketMap.upsert Issuer_fingerprint (Issuer_fingerprint (V4,v4_fp))
+      (*SubpacketMap.upsert Issuer_fingerprint (Issuer_fingerprint (V4,v4_fp)) TODO*)
         signature_subpackets
       |> SubpacketMap.upsert Issuer_keyid
-        (Issuer_keyid (Cs.exc_sub v4_fp 12 8))
+        (Issuer_keyid (Cs.exc_sub v4_fp 12 8)) (* TODO Public_key_packet.v4_key_id*)
+      (* add Signature_creation_time with [current_time] if no creation time: *)
       |> SubpacketMap.add_if_empty Signature_creation_time
         (Signature_creation_time current_time)
     in
@@ -602,7 +609,7 @@ struct
     | Public_key_packet.DSA_privkey_asf key ->
       let (r,s) =
         let (r,s) =
-          Nocrypto.Dsa.sign ~mask:`Yes ~key (Cs.to_cstruct digest) in
+          Mirage_crypto_pk.Dsa.sign ~mask:`Yes ~key (Cs.to_cstruct digest) in
         Cs.of_cstruct r, Cs.of_cstruct s
       in
       Ok (DSA_sig_asf {r = Types.mpi_of_cs_no_header r
@@ -612,7 +619,7 @@ struct
 
       nocrypto_poly_variant_of_hash_algorithm hash_algorithm >>| fun hash ->
         (RSA_sig_asf { m_pow_d_mod_n =
-                          Nocrypto.Rsa.PKCS1.sign ~mask:`Yes
+                          Mirage_crypto_pk.Rsa.PKCS1.sign ~mask:`Yes
                           ~hash
                           ~key (`Digest (Cs.to_cstruct digest))
                           |> Cs.of_cstruct |> mpi_of_cs_no_header
@@ -636,34 +643,36 @@ struct
       | Some data -> hash_cb data ; io_loop ()
     in
     io_loop () >>= fun () ->
-    let subpackets = SubpacketMap.empty in
-    sign ~current_time Signature_of_binary_document signing_key subpackets
-         hash_algo hash_tuple
-
-  let sign_detached_cs ~current_time tsk hash_algo target_cs =
-    let keys = secret_eligible_keys can_sign tsk in
-    (if [] = keys then R.error_msgf "" else Ok (List.hd keys)
-    ) >>= fun signing_key ->
-    let subpackets = SubpacketMap.empty (* TODO support expiry time *) in
-    digest_callback hash_algo >>= fun ((hash_cb, _) as hash_tuple) ->
-    hash_cb target_cs ;
+    let subpackets =
+      SubpacketMap.empty
+      (* TODO support expiry time *)
+      (* TODO get the wanted Uid_packet.t from the user (+ check inclusion)
+              to be able to add a Signers_user_id sig subpacket.*)
+    in
     sign ~current_time
       Signature_of_binary_document
       signing_key subpackets
       hash_algo hash_tuple
 
+  let sign_detached_cs ~current_time tsk hash_algo target_cs =
+    digest_callback hash_algo >>= fun hash_tuple ->
+    sign_detached_cb ~current_time tsk hash_algo
+      hash_tuple
+      (let emitted = ref false in
+       fun () ->
+         if !emitted then Ok None
+         else begin
+           emitted := true ;
+           Ok (Some target_cs)
+         end)
+
   let with_default_signature_subpackets ?(expires : Ptime.Span.t option)
       (subpackets: signature_subpacket SubpacketMap.t) =
-    (* TODO limit this function to only deal with certifications *)
     subpackets
-    (* Tell peers about validity time constraints, if any: *)
     |> begin match expires with
-      | Some expiry -> SubpacketMap.add_if_empty Key_expiration_time
-                         (Key_expiration_time expiry)
+      | Some expiry -> SubpacketMap.add_if_empty Signature_expiration_time
+                         (Signature_expiration_time expiry)
       | None -> (fun kuf -> kuf) end
-    (* Tell peers that we support MDC checking so they will at least SHA1
-       their encrypted messages to us:*)
-    |> SubpacketMap.add_if_empty Features (Features [Modification_detection])
 
   let certify_uid
       ~(current_time : Ptime.t)
@@ -695,8 +704,14 @@ struct
       (* Tell peers about the ciphers we support: *)
       |> SubpacketMap.add_if_empty Preferred_symmetric_algorithms
         (Preferred_symmetric_algorithms [AES256 ; AES192 ; AES128])
+      (* Tell peers that we support MDC checking so they will at least SHA1
+         their encrypted messages to us:*)
+      |> SubpacketMap.add_if_empty Features (Features [Modification_detection])
       |>  with_default_signature_subpackets ?expires
     in
+    Types.true_or_error
+      (SubpacketMap.is_valid_for_uid_certification subpackets)
+      (fun m -> m "certify_uid: illegal subpackets") >>= fun () ->
     digest_callback hash_algo >>= fun ((hash_cb, _) as hash_tuple) ->
     Logs.debug (fun m -> m "certify_uid: hashing public key packet") ;
     hash_packet V4 hash_cb (Public_key_packet
@@ -712,7 +727,8 @@ struct
   let certify_subkey ~current_time
       ?(expires : Ptime.Span.t option)
       ~key_usage_flags
-      (priv_key:Public_key_packet.private_key) subkey
+      ~(subkey:Public_key_packet.private_key)
+      (priv_key:Public_key_packet.private_key)
     : (Signature_packet.t, [>]) result =
     (* TODO handle V3 *)
     (* TODO pick hash from priv_key.Preferred_hash_algorithms if present: *)
@@ -720,31 +736,52 @@ struct
     begin
       let open Public_key_packet in
       let subkey_pk = public_of_private subkey in
+      (if can_sign subkey_pk
+       && (let kuf = key_usage_flags in
+           kuf.sign_data || kuf.certify_keys || kuf.authentication
+           || kuf.unimplemented<>['\000']) then
+         Logs.warn (fun m -> m "subkey can sign, should add embedded backsig")
+      );
+      (* TODO pull this out into a general function, we'll need this for sig verifications too: *)
       match (can_sign subkey_pk), (can_encrypt subkey_pk), key_usage_flags with
-    (* TODO verify that unimpl = [\000]*)
-      | false, _, kuf when (kuf.certify_keys || kuf.sign_data
-                            || kuf.authentication) ->
-        R.error_msgf "Cannot create a certifyin/signing/authenticating key \
+      | false, _, ( { certify_keys = true ; unimplemented=['\000'] ; _ }
+                  | { authentication = true ; unimplemented=['\000'] ; _ }
+                  | { sign_data = true ; unimplemented=['\000'] ; _ } as kuf) ->
+        R.error_msgf "Cannot create a certifying/signing/authenticating key \
                       for a key type that is unable to sign data: %a %a"
           pp_key_usage_flags kuf
           Public_key_packet.pp_secret subkey
-      | _, false, kuf when(kuf.encrypt_communications || kuf.encrypt_storage) ->
-        R.error_msgf "Cannot create a encryption key \
-                      for a key type that is unable to encrypt data: %a %a"
-          pp_key_usage_flags kuf
+      | _, false,
+        ( {encrypt_communications =true ; unimplemented=['\000'] ; _ }
+        | {encrypt_storage = true ; unimplemented=['\000'] ; _ } as kuf) ->
+        R.error_msgf "Cannot create an encryption key for a key type that is \
+                      unable to encrypt data: %a %a" pp_key_usage_flags kuf
           Public_key_packet.pp_secret subkey
       | true, true, _ -> Ok ()
-      | _, _, { unimplemented = ['\000'] } -> Ok ()
+      | _, _, { unimplemented = ['\000'] ; certify_keys = false;
+                sign_data = false ; encrypt_storage = false ;
+                authentication = false; encrypt_communications = false;
+              } -> Ok ()
+      | true, false, {encrypt_storage = false ; encrypt_communications=false ;
+                      unimplemented = ['\000']; _ } -> Ok ()
+      | false, true, {authentication = false; sign_data = false;
+                      certify_keys = false;
+                      unimplemented = ['\000'] ; _ } -> Ok ()
       | _ -> R.error_msgf "Cannot create a key with unknown unimplemented KUF \
                            flags for a keytype that is not able to both \
                            sign and encrypt data: %a %a"
-          pp_key_usage_flags key_usage_flags
-          Public_key_packet.pp_secret subkey
+               pp_key_usage_flags key_usage_flags
+               Public_key_packet.pp_secret subkey
     end >>= fun () ->
     let subpackets =
       (* Can't have Preferred_*; should have KUF *)
       SubpacketMap.empty
       |> SubpacketMap.upsert Key_usage_flags (Key_usage_flags key_usage_flags)
+      (* Tell peers about validity time constraints, if any: *)
+      |> begin match expires with
+        | Some expiry -> SubpacketMap.add_if_empty Key_expiration_time
+                           (Key_expiration_time expiry)
+        | None -> (fun kuf -> kuf) end
       |> with_default_signature_subpackets ?expires
     in
     digest_callback hash_algo >>= fun ((hash_cb, _) as hash_tuple) ->
@@ -852,7 +889,7 @@ struct
 
   (* RFC 4880: Zero or more revocation signatures: *)
   take_signatures_of_types [Key_revocation_signature] packets
-  >>= fun (revocation_signatures , packets) ->
+  >>= fun (_TODO_revocation_signatures , packets) ->
 
   (* revocation keys are detailed here:
      https://tools.ietf.org/html/rfc4880#section-5.2.3.15 *)
@@ -877,7 +914,9 @@ struct
     >>= fun () ->
     let verified_uids =
       verified_uids |> List.map
-        (fun (Uid_packet uid,certifications) -> {uid;certifications})
+        (function (Uid_packet uid,certifications) -> {uid;certifications}
+                | _TODO -> failwith "TODO this goes away with Gmap"
+        )
     in
 
     (* Validate user attributes (basically, embedded image files) *)
@@ -886,7 +925,7 @@ struct
     in
     packets |> take_and_validate_certifications User_attribute_tag
       (validate_user_attribute_signature root_pk) []
-    >>= fun (verified_user_attributes, packets) ->
+    >>= fun (_TODO_verified_user_attributes, packets) ->
 
     Logs.debug (fun m -> m "About to look for subkeys") ;
 
@@ -910,7 +949,7 @@ struct
     (* TODO this is a bit of copy-pasted from root_pk_of_packets; should find a
             way to merge the two *)
       let check_subkey_and_sigs
-          ({binding_signatures; revocations; secret_key} as subkey) =
+          ({binding_signatures; revocations = _; secret_key} as subkey) =
         binding_signatures |> result_filter
           (fun t -> check_subkey_binding_signature ~current_time root_pk
                       secret_key.Public_key_packet.public t
@@ -972,7 +1011,7 @@ struct
 
     let take_subkeys root_pk packets =
       let check_subkey_and_sigs
-          ({binding_signatures; revocations; key} as subkey) =
+          ({binding_signatures; revocations = _TODO; key} as subkey) =
         binding_signatures |> result_filter
           (fun t -> check_subkey_binding_signature ~current_time root_pk key t
                     |> log_failed (fun m -> m "Skipping subkey binding due to sigfail")
@@ -1031,7 +1070,10 @@ let armored_or_not ?armored armor_type cs =
   let decoded = decode_ascii_armor ~allow_trailing:false cs in
   begin match armored, decoded with
     | (Some true | None), Ok (my_armor, cs, trailing)
-      when my_armor = armor_type -> Ok cs
+      when my_armor = armor_type ->
+      if Cs.len trailing <> 0 then
+        Logs.warn (fun m -> m "trailing data: %a" Cs.pp_hex trailing);
+      Ok cs
     | None , Error _->
       Logs.err(fun m -> m "Failed decoding ASCII armor %a, parsing as \
                            raw instead"
@@ -1063,9 +1105,10 @@ type encrypted_message =
     signatures : Signature.t list ;
   }
 
-let decrypt_message ~current_time
+let decrypt_message ~current_time:_TODO
     ~(secret_key:Signature.transferable_secret_key)
     {public_sessions ; data; signatures ; symmetric_session = _} =
+  (* TODO pay heed to RFC 4880: 11.3 *)
   if signatures <> [] then
     Logs.warn (fun m -> m "%s: TODO check signatures" __LOC__) ;
   let trial_decryption_candidates =
@@ -1091,7 +1134,7 @@ let decrypt_message ~current_time
       in
       begin match trial_decrypt_session sessions with
         | Ok _ as res ->
-          Logs.info (fun m -> m "Decrypted using key ID %s"
+          Logs.info (fun m -> m "Decrypted session packet using key ID %s"
                         Public_key_packet.(v4_key_id_hex
                                            @@ public_of_private key)) ;
           res
@@ -1102,40 +1145,69 @@ let decrypt_message ~current_time
                  pp_symmetric_algorithm sym_algo);
   Encrypted_packet.decrypt ~key:dec data >>= fun payload ->
   Logs.debug (fun m -> m "Decrypted: %a" Cs.pp_hex payload);
-  let consume_all payload =
+  let rec consume_all acc payload =
+    (* TODO well there can be multiple packets in here, so this is wrong *)
     Types.consume_packet_header payload >>= fun (header, payload) ->
     Logs.debug (fun m -> m "Got header %a" Types.pp_packet_header header );
     Types.consume_packet_length header.Types.length_type payload
-    >>= fun (payload, rest) ->
-    Types.true_or_error (0 = Cs.len rest)
-      (fun m -> m "Extraneous data in decrypted payload: %a" Cs.pp_hex rest)
-    >>| fun () -> header, payload
+    >>= fun (packet_body, rest) ->
+    if Cs.len rest <> 0 then
+      consume_all ((header,packet_body)::acc) rest
+    else
+      Ok (List.rev ((header, packet_body)::acc))
   in
-  let handle_literal payload =
-      Literal_data_packet.parse payload
-      >>= fun (Literal_data_packet.In_memory_t (final_state, acc) as pkt) ->
+  let handle_literal (type x) payload =
+    Literal_data_packet.parse payload >>= function
+    | (Literal_data_packet.In_memory_t (final_state, acc) as pkt) ->
       let msg = String.concat "" acc in
-      Logs.debug (fun m -> m "ph: %a@ msg:@,%S"
+      Logs.debug (fun m -> m "handle_literal: %a@ msg:@,%S"
                      Literal_data_packet.pp pkt msg) ;
       Ok (final_state, msg)
   in
-  consume_all payload >>= fun (header,payload) ->
-  begin match header.Types.packet_tag with
-    | Types.Literal_data_packet_tag ->
-      handle_literal payload
-    | Types.Compressed_data_packet_tag ->
-      Logs.debug (fun m -> m "compressed packet:@,%a" Cs.pp_hex payload);
-      Compressed_packet.parse
-        (Cs.R.of_cs (R.msg "Unexpected end of compressed plaintext") payload)
-      >>| Cs.of_string >>= fun decompressed ->
-      Logs.debug (fun m -> m "decompressed: %a" Cs.pp_hex decompressed);
-      consume_all decompressed >>| snd >>= fun literal_data ->
-      Logs.debug (fun m -> m "literal_data: %a" Cs.pp_hex literal_data);
-      handle_literal literal_data
-    (* TODO check that header does indeed contain a literal data packet*)
-    | unexpected_tag -> R.error_msgf "Expected Literal Data in message, got %a"
-                          Types.pp_packet_tag unexpected_tag
-  end
+  let handle_compressed_packets decompressed =
+    let rec loop acc buf =
+      consume_packet_header buf >>= fun (pkt_header, buf_tl) ->
+      Logs.debug (fun m ->
+          m "Got packet header %a" pp_packet_header pkt_header);
+      consume_packet_length pkt_header.length_type buf_tl
+      >>= fun (payload, buf_tl) ->
+      begin match pkt_header.packet_tag with
+        | Types.Literal_data_packet_tag ->
+          handle_literal payload >>| fun x -> `Literal x
+        | Types.One_pass_signature_tag ->
+          Ok (`One_pass_signature payload)
+        | Types.Signature_tag ->
+          Ok (`Signature payload)
+        | _ ->
+          R.error_msgf "Refusing to parse %a inside a compressed \
+                        packet inside a message packet:@,%a"
+            pp_packet_header pkt_header Cs.pp_hex payload
+      end >>= fun next_acc ->
+      if Cs.len buf_tl <> 0 then
+        loop (next_acc::acc) buf_tl
+      else
+        Ok (List.rev (next_acc::acc))
+    in loop [] decompressed
+  in
+  let handle_legal_packet (header,payload) =
+    begin match header.Types.packet_tag with
+      | Types.Literal_data_packet_tag ->
+        Logs.debug (fun m -> m "literal_data:@,%a" Cs.pp_hex payload);
+        handle_literal payload >>| fun x -> `Literal x
+      | Types.Compressed_data_packet_tag ->
+        Logs.debug (fun m -> m "compressed packet:@,%a" Cs.pp_hex payload);
+        Compressed_packet.parse
+          (Cs.R.of_cs (R.msg "Unexpected end of compressed plaintext") payload)
+        >>| Cs.of_string >>= fun decompressed ->
+        Logs.debug (fun m -> m "decompressed:@,%a" Cs.pp_hex decompressed);
+        handle_compressed_packets decompressed >>| fun x -> `Compressed x
+      | _ -> R.error_msgf "Expected Literal Data in message, got %a"
+               Types.pp_packet_header header
+    end
+  in
+  consume_all [] payload >>= fun packets ->
+  Logs.warn (fun m -> m "TODO %d" @@ List.length packets);
+  result_ok_list_or_error handle_legal_packet packets
 
 let encode_message ?(armored=true) (message:encrypted_message) =
   result_ok_list_or_error
@@ -1180,7 +1252,7 @@ let decode_message ?g ?armored cs
                            looking for encrypted data packets"
     in
     let trailing_packet pkt s_acc = function
-      | (Signature_type x, (*TODO*) _cs ) :: tl ->
+      | (Signature_type x, _cs ) :: tl ->
         loop (`Trailing (pkt, x::s_acc)) ~public tl
       | (pkt, _)::_ -> R.error_msgf "Unexpected packet while decoding message \
                                      [trailing packets]: %a" pp_packet pkt
@@ -1253,9 +1325,8 @@ let new_transferable_secret_key
     SubpacketMap.empty
     |> SubpacketMap.add_if_empty Key_usage_flags
       (Signature_packet.Key_usage_flags
-         { certify_keys = true ; unimplemented = ['\000']
-         ; sign_data = false ; encrypt_communications = false
-         ; encrypt_storage = false ; authentication = false })
+         (* TODO rnp/netpgp WARNs if ~sign_data:false *)
+         (create_key_usage_flags ~certify_keys:true ()))
   in
   uncertified_uids
   |> result_ok_list_or_error (fun uid ->
@@ -1270,7 +1341,7 @@ let new_transferable_secret_key
   else
   priv_subkeys |> result_ok_list_or_error
     (fun (subkey, key_usage_flags) ->
-       Signature.certify_subkey ~current_time ~key_usage_flags root_key subkey
+       Signature.certify_subkey ~current_time ~key_usage_flags root_key ~subkey
        >>| fun certification -> {Signature.secret_key = subkey
                                 ; binding_signatures = [certification]
                                 ; revocations = [] }

@@ -6,10 +6,7 @@ and has basic support for decryption of messages.
 
 __Right now it's a work in progress and should not be used for anything critical to security in a real-world situation.__
 
-- Encryption is being worked on; currently GnuPG won't read our messages
-  (but we can read their messages!).
-
-- Supporting El-Gamal and elliptic curve keys are out of scope due to lack of support for these in [nocrypto](https://github.com/mirleft/nocrypto).
+- Supporting El-Gamal and elliptic curve keys are out of scope due to lack of support for these in [mirage-crypto-pk](https://github.com/mirage/mirage-crypto).
 
 I could be persuaded to add these if someone can point me to maintained libraries implementing these.
 
@@ -39,10 +36,9 @@ The library currently depends on the unreleased `Usane` library for unsigned
 opam pin add -n usane 'https://github.com/hannesm/usane.git'
 opam pin add -n cs 'https://github.com/cfcs/ocaml-cs.git'
 opam pin add -n gmap 'https://github.com/hannesm/gmap.git'
-opam pin add -n nocrypto -k git 'https://github.com/mirleft/ocaml-nocrypto.git#79d5db2488e338d161d7e170cd681a8120ce07d1'
 opam pin add -n mrmime -k git https://github.com/oklm-wsh/MrMime.git
 opam install alcotest bos cmdliner cs cstruct fmt fpath gmap hex logs \
-             nocrypto ptime qcheck rresult usane topkg mrmime
+             mirage-crypto-pk ptime qcheck rresult usane topkg mrmime
 ocaml pkg/pkg.ml build
 ```
 
@@ -122,6 +118,7 @@ The spec is included in this repository in the `rfc/` subdirectory.
 
 ### Alternative implementations
 
+- [cypherspace.org page about openpgp](http://www.cypherspace.org/openpgp/)
 - [GnuPG (C, using libgcrypt)](https://gnupg.org/)
   - [GnuPG's list of FOSS implementations](https://wiki.gnupg.org/OtherFreeSoftwareOpenPGP)
 - [Keybase PGP (C)](https://github.com/keybase/kbpgp/)
@@ -132,6 +129,7 @@ The spec is included in this repository in the `rfc/` subdirectory.
 - [TinyGPG (C, using libgcrypt)](https://github.com/gpg/tgpg)
 - [CalcCrypto OpenPGP (C++)](https://github.com/calccrypto/OpenPGP)
 - [Golang OpenPGP (Go)](https://godoc.org/golang.org/x/crypto/openpgp)
+- [Protonmail's fork of Golang OpenPGP: Gopenpgp](https://protonmail.com/blog/openpgp-golang/) see also [this Github issue](https://github.com/golang/go/issues/30141)
 - [hOpenPGP (Haskell)](https://hackage.haskell.org/package/hOpenPGP-2.5.5)
   - [may be this, TODO](https://github.com/singpolyma/OpenPGP-Haskell/)
 - [Bouncy Castle (Java)](https://bouncycastle.org/)

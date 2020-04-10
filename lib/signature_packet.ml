@@ -39,6 +39,7 @@ module SubpacketMap : sig
   val to_list : 'element t -> 'element list
   val get_opt : tag -> 'element t -> 'element option
   val get : tag -> 'element t -> ('element,[> R.msg]) result
+  val is_valid_for_uid_certification : 'a t -> bool
 end = struct
   type tag = signature_subpacket_tag
   type 'element value = {index: int ; tag: signature_subpacket_tag ;
@@ -83,6 +84,37 @@ end = struct
     match get_opt tag t with
     | Some e -> Ok e
     | None -> err_msg_debug (fun m -> m "SubpacketMap.get: not found")
+
+  let is_valid_for_uid_certification (T t) =
+    List.for_all (fun element -> match element.tag with
+        | Signature_creation_time | Signature_expiration_time
+        | Issuer_fingerprint | Issuer_keyid | Policy_URI
+        | Revocation_key | Notation_data
+        | Key_usage_flags
+
+         -> true
+        (* acceptable for "self-signatures" / own UID certification *)
+        | Features
+        | Key_server_preferences
+        | Preferred_hash_algorithms
+        | Preferred_symmetric_algorithms
+        | Preferred_compression_algorithms
+        | Preferred_key_server (*UIDs*)
+        | Primary_user_id (* UID and UAttrs *)
+        | Exportable_certification
+          -> true
+        (* invalid: *)
+        | Embedded_signature (* only for subkey sigs *)
+        | Reason_for_revocation (* only for revocation sigs *)
+        | Key_expiration_time (* only for subkeys *)
+        | Revocable (* this is a backdoor *)
+        | Signature_target (* not sure what this is *)
+        | Signers_user_id (* would be weird if one UID signs another *)
+        | Regular_expression
+        | Trust_signature
+        | Unimplemented_signature_subpacket_tag _ (* be conservative *)
+          -> false
+    ) t.lst
 end
 
 type t = {
@@ -99,6 +131,7 @@ type t = {
 
 module Subpacket = struct
 
+(*
 type sig_creation_time = Tag1 of Ptime.t
 type sig_expiration_time = Ptime.Span.t
 type key_expiration_time = Ptime.Span.t
@@ -138,7 +171,7 @@ type (_,_) subpacket = (* this stuff is not used atm*)
   | Unimplemented_subpacket :
       (unimplemented_subpacket as 's) -> unimplemented_subpacket subpacket*)
 end
-
+*)
 let signature_subpacket_tag_of_signature_subpacket packet : signature_subpacket_tag =
   match packet with
   | Features _ -> Features
@@ -208,7 +241,8 @@ and pp_signature_subpacket ppf (pkt) =
           Cs.pp_hex cs
   end
 
-let filter_subpacket_tag (tag:signature_subpacket_tag) =
+let _filter_subpacket_tag (tag:signature_subpacket_tag) =
+  (*TODO not used *)
   List.filter
     (fun subpkt -> tag = signature_subpacket_tag_of_signature_subpacket subpkt)
 
@@ -343,14 +377,14 @@ The signature was not signed by this public key.|}
                 t.algorithm_specific_data with
     | Public_key_packet.DSA_pubkey_asf key, DSA_sig_asf {r;s;} ->
       Logs.debug (fun m -> m "Trying to verify a DSA signature") ;
-      dsa_asf_are_valid_parameters ~p:key.Nocrypto.Dsa.p
-                                   ~q:key.Nocrypto.Dsa.q
+      dsa_asf_are_valid_parameters ~p:key.Mirage_crypto_pk.Dsa.p
+                                   ~q:key.Mirage_crypto_pk.Dsa.q
                                    ~hash_algo:t.hash_algorithm
       >>= fun () ->
       let cs_r = cs_of_mpi_no_header r |> Cs.to_cstruct in
       let cs_s = cs_of_mpi_no_header s |> Cs.to_cstruct in
       e_true `Invalid_signature
-        (Nocrypto.Dsa.verify ~key (cs_r,cs_s) (Cs.to_cstruct digest))
+        (Mirage_crypto_pk.Dsa.verify ~key (cs_r,cs_s) (Cs.to_cstruct digest))
       |> log_failed (fun m -> m "DSA signature validation failed")
       >>| fun () -> `Good_signature
     | ( Public_key_packet.RSA_pubkey_sign_asf pub
@@ -367,7 +401,7 @@ The signature was not signed by this public key.|}
             (Cs.to_hex (cs_of_mpi_no_header m_pow_d_mod_n)))
       in
         e_true `Invalid_signature
-          (Nocrypto.Rsa.PKCS1.verify
+          (Mirage_crypto_pk.Rsa.PKCS1.verify
              ~hashp:((=) hash_algo)
              ~signature:(cs_of_mpi_no_header m_pow_d_mod_n |> Cs.to_cstruct)
              ~key:pub (`Digest (Cs.to_cstruct digest)))
@@ -489,7 +523,7 @@ and construct_to_be_hashed_cs_manual version sig_type pk_algo hash_algo
     ) >>= fun tbh ->
   (Ok tbh)
   |>
-  log_msg (fun m -> m "signature to be hashed (%d bytes): @[%a@]"
+  log_msg (fun m -> m "@[signature to be hashed (%d bytes):@,@[%a@]@]"
               (Cs.len tbh) Cs.pp_hex tbh)
 
 and construct_to_be_hashed_cs t : ('ok,'error) result =
@@ -532,7 +566,7 @@ and cs_of_signature_subpacket pkt =
   Cs.concat [ signature_subpacket_tag_of_signature_subpacket pkt
               |> cs_of_signature_subpacket_tag
             ; cs]
-  |> log_msg (fun m -> m "serialized subpacket: @[%a@ %a@]"
+  |> log_msg (fun m -> m "serialized subpacket:@   @[%a@ %a@]"
                 pp_signature_subpacket pkt Cs.pp_hex cs)
 
 let hash t (hash_cb : Cs.t -> unit) = construct_to_be_hashed_cs t >>| hash_cb
@@ -577,9 +611,9 @@ let parse_subpacket ~allow_embedded_signatures buf
     Cs.e_get_char (`Msg "issuer fp") data 0
     >>= e_version_of_char (`Msg "version of char TODO")
       >>= begin function
-        | V4 when Cs.len data = 1 + Nocrypto.Hash.SHA1.digest_size ->
+        | V4 when Cs.len data = 1 + Mirage_crypto.Hash.SHA1.digest_size ->
           Ok (Some (Issuer_fingerprint (V4,
-                      Cs.(exc_sub data 1 Nocrypto.Hash.SHA1.digest_size))))
+                      Cs.(exc_sub data 1 Mirage_crypto.Hash.SHA1.digest_size))))
         | V3 (*TODO don't think Issuer_fingerprint was a thing in V3? *)
         | V4 -> error_msg (fun m -> m "Invalid issuer fingerprint packet: %a"
                               Cs.pp_hex data)

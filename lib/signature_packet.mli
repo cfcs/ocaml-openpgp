@@ -34,6 +34,9 @@ sig
   val to_list : 'element t -> 'element list
   val empty : 'element t
   val cardinality : 'a t -> int
+  val is_valid_for_uid_certification : 'a t -> bool
+  (** [is_valid_for_uid_certification t] is [true] if all [tag]s in [t] are
+      permitted to be included in a self-signature and/or UID certification.*)
 end
 
 type t =

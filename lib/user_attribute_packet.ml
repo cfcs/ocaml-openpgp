@@ -5,7 +5,7 @@ type t = Cs.t
 let pp ppf t =
   Fmt.pf ppf "{ @[<v>unimplemented user attribute:@ %a@]}" Cs.pp_hex t
 
-let parse_packet (buf : Cs.t) : (t, 'error) result =
+let parse_packet (buf : Cs.t) : (t, [> ]) result =
   (* RFC 4880: 5.12: The User Attribute packet is made up of one or more
      attribute subpackets.  Each subpacket consists of a subpacket header and a
      body.  The header consists of:

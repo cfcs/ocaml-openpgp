@@ -27,8 +27,8 @@ let test_packet_length_selfcheck () =
   for i = 0 to 1030 do
     let i = Int32.of_int i in
     Alcotest.(check int32) "same int" i
-      (serialize_packet_length_uint32 i
-       |> v4_packet_length_of_cs `Error >>| snd |> R.get_ok
+      ((serialize_packet_length_uint32 i
+       |> v4_packet_length_of_cs `Error >>| fun (_,_,len) -> len) |> R.get_ok
       )
   done
 
@@ -240,7 +240,7 @@ let test_integrity_with_algo algo target_hashes : unit =
     >>= fun signature -> Openpgp.Signature.verify_detached_cs ~current_time
       root_pk signature message_cs
     >>| fun `Good_signature ->
-    let hashes = List.map (fun x -> Nocrypto.Hash.MD5.digest x
+    let hashes = List.map (fun x -> Mirage_crypto.Hash.MD5.digest x
                                     |> Cs.of_cstruct)
         (List.map Cs.to_cstruct [sk_asc_cs; sig_cs]) in
     Logs.app (fun m -> m "%a" (Fmt.list Cs.pp_hex) hashes);

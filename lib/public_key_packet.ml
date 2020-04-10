@@ -6,19 +6,19 @@ open Rresult
 type parse_error = [ `Incomplete_packet | `Msg of string]
 
 type public_key_asf =
-  | DSA_pubkey_asf of Nocrypto.Dsa.pub
+  | DSA_pubkey_asf of Mirage_crypto_pk.Dsa.pub
   | Elgamal_pubkey_asf of { p: mpi ; g: mpi ; y: mpi }
-  | RSA_pubkey_sign_asf of Nocrypto.Rsa.pub
-  | RSA_pubkey_encrypt_asf of Nocrypto.Rsa.pub
-  | RSA_pubkey_encrypt_or_sign_asf of Nocrypto.Rsa.pub
+  | RSA_pubkey_sign_asf of Mirage_crypto_pk.Rsa.pub
+  | RSA_pubkey_encrypt_asf of Mirage_crypto_pk.Rsa.pub
+  | RSA_pubkey_encrypt_or_sign_asf of Mirage_crypto_pk.Rsa.pub
 
 let pp_pk_asf ppf asf=
-  let pp_rsa ppf (pk:Nocrypto.Rsa.pub) =
+  let pp_rsa ppf (pk:Mirage_crypto_pk.Rsa.pub) =
     Fmt.pf ppf "%d-bit (e: %a) RSA"
-      (Z.numbits pk.Nocrypto.Rsa.n) Z.pp_print pk.Nocrypto.Rsa.e
+      (Z.numbits pk.n) Z.pp_print pk.e
   in
   match asf with
-  | DSA_pubkey_asf pk -> Fmt.pf ppf "%d-bit DSA key" (Z.numbits pk.Nocrypto.Dsa.p)
+  | DSA_pubkey_asf pk -> Fmt.pf ppf "%d-bit DSA key" (Z.numbits pk.p)
   | Elgamal_pubkey_asf _ -> Fmt.string ppf "El-Gamal key TODO unimplemented"
   | RSA_pubkey_sign_asf pk -> Fmt.pf ppf "%a signing key" pp_rsa pk
   | RSA_pubkey_encrypt_asf pk -> Fmt.pf ppf "%a encryptionsigning key" pp_rsa pk
@@ -32,8 +32,8 @@ let public_key_algorithm_of_asf = function
   | Elgamal_pubkey_asf _ -> Elgamal_encrypt_only
 
 type private_key_asf =
-  | DSA_privkey_asf of Nocrypto.Dsa.priv
-  | RSA_privkey_asf of Nocrypto.Rsa.priv
+  | DSA_privkey_asf of Mirage_crypto_pk.Dsa.priv
+  | RSA_privkey_asf of Mirage_crypto_pk.Rsa.priv
   | Elgamal_privkey_asf of { x : mpi}
 
 type t =
@@ -59,11 +59,11 @@ let pp_secret ppf t = pp ppf t.public (* TODO *)
 let cs_of_public_key_asf asf =
   Logs.debug (fun m -> m "cs_of_public_key_asf called");
   begin match asf with
-  | DSA_pubkey_asf {Nocrypto.Dsa.p;q;gg;y} -> [p;q;gg;y]
+  | DSA_pubkey_asf {Mirage_crypto_pk.Dsa.p;q;gg;y} -> [p;q;gg;y]
   | Elgamal_pubkey_asf { p ; g ; y } -> [ p; g; y ]
   | RSA_pubkey_sign_asf p
   | RSA_pubkey_encrypt_or_sign_asf p
-  | RSA_pubkey_encrypt_asf p -> [ p.Nocrypto.Rsa.n ; p.Nocrypto.Rsa.e ]
+  | RSA_pubkey_encrypt_asf p -> [ p.n ; p.e ]
   end
   |> cs_of_mpi_list
 
@@ -77,12 +77,79 @@ let rsa_d_secret_exponent ~e ~p ~q =
   Logs.warn (fun m -> m "TODO should this RSA d computation be blinded?");
   Z.invert e @@ Z.lcm (Z.pred p) (Z.pred q)
 
+(*
+let factor ~e ~n =
+  let xxx =
+    let e,k,m = 100, 100, 100 in
+    let p = Z.of_int 2 in
+    let b = Nocrypto.Rng.Z.gen n in
+    let g = ref 1 in
+    let q = ref 1 in
+    let it = ref (Z.of_int 2) in
+    while (!g = 1) do
+      let e = ((Z.numbits n) / (Z.numbits p)) + 1 in ();
+    done
+  in
+  let prime_decomposition x =
+    let rec inner c p =
+      if Z.lt p (Z.sqrt c) then
+        [p]
+      else if Z.equal (Z.(mod) p c) Z.zero then
+        c :: inner c (Z.div p c)
+      else
+        inner (Z.succ c) p
+    in
+    inner (Z.succ (Z.succ Z.zero)) x
+  in
+  let pub_exp = e in
+  let modulus = n in
+  let next_prime = ref (Z.sqrt modulus) in
+  let removed = ref 0 in
+  () (*while removed <> 0 do
+    next_prime := Z.next_prime next_prime ;
+    removed := Z.rem
+
+  done*)
+*)
+
+let check_prime name zt =
+  let pred_and_halved = Z.(div (pred zt) (of_int 2)) in (* (zt-1)/2 *)
+  (*let four_p_minus_one = Z.(pred (mul zt (of_int 4))) in (* (4(zt)-1 *)*)
+  let probab = Z.probab_prime pred_and_halved 25 in
+  Logs.warn (fun m -> m "%s: probab: %d" name probab)
+
 let cs_of_secret_key_asf asf =
   Logs.debug (fun m -> m "cs_of_secret_key_asf called") ;
   begin match asf with
     | Elgamal_privkey_asf {x} -> [x]
-    | DSA_privkey_asf {Nocrypto.Dsa.x ; _} -> [x]
-    | RSA_privkey_asf {Nocrypto.Rsa.d; p; q; e; _} ->
+    | DSA_privkey_asf {Mirage_crypto_pk.Dsa.x ; _} -> [x]
+    | RSA_privkey_asf {Mirage_crypto_pk.Rsa.d; p; q; e; n; _} ->
+      (*Mirage_crypto_pk.Rsa.priv_of_primes ~e ~p:q ~q:p ;*)
+      let whatever_d = let open Mirage_crypto_pk.Rsa in
+        Z.(d mod
+           (div (mul (pred p) (pred q)) (succ one))) in
+      check_prime "p" p ;
+      check_prime "q" p ;
+      (* TODO
+let p_safe = Nocrypto.Numeric.pseudoprime Z.(div (pred p) (succ one)) in
+      let q_safe = Nocrypto.Numeric.pseudoprime Z.(div (pred q) (succ one)) in
+      *)
+      let p_safe = false and q_safe = false in
+      Logs.warn (fun m ->
+          m "e: %a@.nocrypto-n:@,%a@,nocrypto-p:@,%a@,nocrypto-q:%a@,m-d:@,%a@,j-d:@,%a@,nocrypto-d:@,%a\
+             @,p_safe: %a\
+             @,q_safe: %a"
+            pp_mpi e
+            pp_mpi n
+            pp_mpi p
+            pp_mpi q
+            pp_mpi whatever_d
+            pp_mpi (rsa_d_secret_exponent ~e ~p ~q)
+            pp_mpi d
+            pp_bool p_safe
+            pp_bool q_safe
+        );
+
       [ rsa_d_secret_exponent ~e ~p ~q ; p; q; rsa_q_prime ~p ~q ]
   end
   |> cs_of_mpi_list
@@ -150,7 +217,7 @@ let v4_key_id t : string  =
   (* NOTE: "low-order" means rightmost since it's "big-endian".*)
   Cs.sub
     (v4_fingerprint t)
-    (Nocrypto.Hash.SHA1.digest_size - (64/8))
+    (Mirage_crypto.Hash.SHA1.digest_size - (64/8))
     (64/8)
   |> R.get_ok |> Cs.to_string
 
@@ -175,8 +242,8 @@ let parse_rsa_asf
   : (public_key_asf * Cs.t, [> `Msg of string ]) result =
   consume_mpi buf >>= fun (n, buf) ->
   consume_mpi buf >>= fun (e, buf_tl) ->
-  mpis_are_prime [e] >>| fun _ ->
-  let pk = Nocrypto.Rsa.{ n; e} in
+  mpis_are_prime [e] >>= fun () ->
+  Mirage_crypto_pk.Rsa.pub ~e ~n >>| fun pk ->
   begin match purpose with
     | `Sign -> RSA_pubkey_sign_asf pk
     | `Encrypt -> RSA_pubkey_encrypt_asf pk
@@ -194,18 +261,19 @@ let parse_dsa_asf buf : (public_key_asf * Cs.t, 'error) result =
   (* TODO check y < p *)
 
   (* TODO the public key doesn't contain the hash algo; the signature does *)
-  dsa_asf_are_valid_parameters ~p ~q ~hash_algo:SHA512 >>| fun () ->
+  dsa_asf_are_valid_parameters ~p ~q ~hash_algo:SHA512 >>= fun () ->
 
-  let pk = {Nocrypto.Dsa.p;q;gg;y} in
+  Mirage_crypto_pk.Dsa.pub ~p ~q ~gg ~y () >>| fun pk ->
   (DSA_pubkey_asf pk), buf_tl
 
-let parse_secret_dsa_asf {Nocrypto.Dsa.p;q;gg;y} buf
+let parse_secret_dsa_asf {Mirage_crypto_pk.Dsa.p;q;gg;y} buf
   : (private_key_asf * Cs.t, [> `Msg of string ] ) result =
   (* Algorithm-Specific Fields for DSA secret keys:
      - MPI of DSA secret exponent x. *)
   (* TODO validate parameters *)
-  consume_mpi buf >>| fun (x,tl) ->
-  DSA_privkey_asf {Nocrypto.Dsa.x;p;q;gg;y}, tl
+  consume_mpi buf >>= fun (x,tl) ->
+  Mirage_crypto_pk.Dsa.priv ~x ~p ~q ~gg ~y () >>| fun sk ->
+  DSA_privkey_asf sk, tl
 
 let parse_secret_elgamal_asf (_:'pk) buf =
   (* Algorithm-Specific Fields for Elgamal secret keys:
@@ -213,7 +281,8 @@ let parse_secret_elgamal_asf (_:'pk) buf =
   consume_mpi buf >>| fun (x, tl) ->
   Elgamal_privkey_asf {x}, tl
 
-let parse_secret_rsa_asf ?g ({Nocrypto.Rsa.e; n}:Nocrypto.Rsa.pub) buf
+let parse_secret_rsa_asf ?g
+    ({Mirage_crypto_pk.Rsa.e; n}:Mirage_crypto_pk.Rsa.pub) buf
   : (private_key_asf * Cs.t, [> `Msg of string]) result =
   (* Algorithm-Specific Fields for RSA secret keys:
      - multiprecision integer (MPI) of RSA secret exponent d.
@@ -223,7 +292,8 @@ let parse_secret_rsa_asf ?g ({Nocrypto.Rsa.e; n}:Nocrypto.Rsa.pub) buf
   consume_mpi buf >>= fun (check_d, buf) -> (* "d" *)
   consume_mpi buf >>= fun (p, buf) ->
   consume_mpi buf >>= fun (q, buf) ->
-  consume_mpi buf >>= fun (check_q', tl) -> (* "u" aka Nocrypto.Rsa.priv.q' *)
+  consume_mpi buf >>= fun (check_q', tl) ->
+  (* "u" aka Mirage_crypto_pk.Rsa.priv.q' *)
 
   let sk_q_prime = rsa_q_prime ~p ~q in
   true_or_error (Z.equal check_q' sk_q_prime)
@@ -241,9 +311,11 @@ let parse_secret_rsa_asf ?g ({Nocrypto.Rsa.e; n}:Nocrypto.Rsa.pub) buf
   mpis_are_prime [e;q;p] >>= fun () ->
 
   (*begin match Nocrypto.Rsa.priv_of_primes ~e ~q ~p with*)
-  begin match Nocrypto.Rsa.priv_of_exp ?g ~e ~d:check_d n with
+  (*begin match Nocrypto.Rsa.priv_of_exp ?g ~e ~d:check_d n with*)
+  begin match Mirage_crypto_pk.Rsa.priv_of_primes ~e ~q ~p with
+    | Error _ as err -> err
     | exception _ -> Error (msg_of_invalid_mpi_parameters [e;p;q])
-    | sk -> (*TODO comparison p < q*)
+    | Ok sk -> (*TODO comparison p < q*)
       (* gpg --list-packets translation key:
          pkey[0] -> pk.n
          skey[2] -> check_d
@@ -252,7 +324,22 @@ let parse_secret_rsa_asf ?g ({Nocrypto.Rsa.e; n}:Nocrypto.Rsa.pub) buf
          skey[5] -> Z.invert p q
       *)
 
-      let open Nocrypto.Rsa in
+      let whatever_d = let open Mirage_crypto_pk.Rsa in
+        Z.(sk.d mod
+           (div (mul (pred sk.p) (pred sk.q)) (succ one))) in
+      Logs.warn (fun m ->
+          m "e: %a@.n:@,%a@,p:@,%a@,q:%a@,whatever-d:@,%a@,expected-d:@,%a@,check-d:@,%a@,nocrypto-d:@,%a"
+            pp_mpi sk.e
+            pp_mpi sk.n
+            pp_mpi sk.p
+            pp_mpi sk.q
+            pp_mpi whatever_d
+            pp_mpi sk_d
+            pp_mpi check_d
+            pp_mpi sk.d
+        );
+
+      let open Mirage_crypto_pk.Rsa in
       (* validate key parameters; check "d" and "u"; "n"="p"*"q" *)
       true_or_error (Z.equal n sk.n
       (* TODO && Z.equal check_q' sk.q' && Z.equal check_d sk.d*) )
@@ -330,7 +417,7 @@ let parse_secret_packet ?g buf : (private_key, 'error) result =
     (fun m -> m "Parsing secret key: Invalid mod-65536-checksum: %a <> %a"
         Cs.pp_hex csum Cs.pp_hex computed_sum
     ) >>| log_msg (fun m -> m "Parsing secret key: Good checksum: %a"
-                      Cs.pp_hex csum) >>= fun () ->
+                      (pp_green Cs.pp_hex) csum) >>= fun () ->
 
   Cs.e_is_empty (`Msg "Extraneous data after secret ASF") buf_tl >>| fun () ->
   {public ; priv_asf }
@@ -338,24 +425,27 @@ let parse_secret_packet ?g buf : (private_key, 'error) result =
 let generate_new ?g ~(current_time:Ptime.t) key_type =
   begin match key_type with
   | DSA ->
-    let priv = Nocrypto.Dsa.generate ?g `Fips3072 in
-    let pub  = Nocrypto.Dsa.pub_of_priv priv in
+    let priv = Mirage_crypto_pk.Dsa.generate ?g `Fips3072 in
+    let pub  = Mirage_crypto_pk.Dsa.pub_of_priv priv in
     Ok (DSA_privkey_asf priv, DSA_pubkey_asf pub)
   | RSA_sign_only -> (* TODO warn about deprecated*)
     Logs.warn (fun m -> m "Generate sign-only RSA key deprecated in RFC 4880");
-    let priv = Nocrypto.Rsa.generate ?g ~e:(Z.of_int 65537) 4096 in
+    let priv =
+      Mirage_crypto_pk.Rsa.generate ?g ~e:(Z.of_int 65537) ~bits:4096 () in
     Ok (RSA_privkey_asf priv,
-        RSA_pubkey_sign_asf (Nocrypto.Rsa.pub_of_priv priv))
+        RSA_pubkey_sign_asf (Mirage_crypto_pk.Rsa.pub_of_priv priv))
   | RSA_encrypt_or_sign ->
-    let priv = Nocrypto.Rsa.generate ?g ~e:(Z.of_int 65537) 4096 in
+    let priv =
+      Mirage_crypto_pk.Rsa.generate ?g ~e:(Z.of_int 65537) ~bits:4096 () in
     Ok (RSA_privkey_asf priv,
-        RSA_pubkey_encrypt_or_sign_asf (Nocrypto.Rsa.pub_of_priv priv))
+        RSA_pubkey_encrypt_or_sign_asf (Mirage_crypto_pk.Rsa.pub_of_priv priv))
   | RSA_encrypt_only ->
     Logs.warn (fun m -> m "Generate encrypt-only RSA key deprecated \
                            in RFC 4880");
-    let priv = Nocrypto.Rsa.generate ?g ~e:(Z.of_int 65537) 4096 in
+    let priv =
+      Mirage_crypto_pk.Rsa.generate ?g ~e:(Z.of_int 65537) ~bits:4096 () in
     Ok (RSA_privkey_asf priv,
-        RSA_pubkey_encrypt_asf (Nocrypto.Rsa.pub_of_priv priv))
+        RSA_pubkey_encrypt_asf (Mirage_crypto_pk.Rsa.pub_of_priv priv))
   | Elgamal_encrypt_only ->
     error_msg (fun m -> m "Elgamal key generation not supported")
   end

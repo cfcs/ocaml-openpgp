@@ -24,9 +24,9 @@ let module_name = "Sym. Encrypted Integrity Protected Data Packet"
 
 let pp (type kind) fmt : kind t -> unit = function
   | Encrypted {payload; key = _ } ->
-    Fmt.pf fmt "encrypted data packet: %a" Cs.pp_hex payload
+    Fmt.pf fmt "encrypted data packet:@,%a" Cs.pp_hex payload
   | Decrypted {payload ; key = _ } ->
-    Fmt.pf fmt "decrypted data packet: %a" Cs.pp_hex payload
+    Fmt.pf fmt "decrypted data packet:@,%a" Cs.pp_hex payload
 
 open Rresult
 

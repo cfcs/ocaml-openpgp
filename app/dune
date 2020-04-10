@@ -1,0 +1,7 @@
+(executable
+(name opgp)
+(public_name opgp)
+(package openpgp)
+(modules opgp)
+(libraries bos cmdliner cs fmt fpath logs mrmime openpgp result rresult)
+)

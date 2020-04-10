@@ -35,14 +35,14 @@ val decrypt : Public_key_packet.private_key -> t ->
     decryption of the [session_packet] using {!private_key}.
 *)
 
-val create_key : ?g:Nocrypto.Rng.g -> Types.symmetric_algorithm ->
+val create_key : ?g:Mirage_crypto_rng.g -> Types.symmetric_algorithm ->
   (symmetric_key, [> R.msg]) result
 (** [create_key ?rng algo] is a {!symmetric_key} of the length mandated
     by [algo], using the [?rng].
     TODO consider putting in {!Types}?
 *)
 
-val create : ?g:Nocrypto.Rng.g -> Public_key_packet.t -> symmetric_key ->
+val create : ?g:Mirage_crypto_rng.g -> Public_key_packet.t -> symmetric_key ->
   (t, [> R.msg] ) result
 (** [create ?rng target_pk key] is the [key] encrypted to the [target_pk].
 *)

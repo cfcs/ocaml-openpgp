@@ -79,7 +79,7 @@ let error_msg log = Error (level_msg Logs.Error log)
 let e_true e bool = if bool then Ok () else Error e
 let true_or_error bool f : (unit,'t)result = if bool then Ok () else
     Error (level_msg Logs.Error f)
-let log_msg log v = Logs.debug log ; v
+let log_msg (type v) log (v:v) : v = Logs.debug log ; v
 let log_failed log = R.reword_error (log_msg log)
 let replace_error log v = R.reword_error (fun _ -> level_msg Logs.Error log) v
 
@@ -445,6 +445,50 @@ let cs_of_key_usage_flags t : Cs.t=
       |> Char.chr )
     :: List.tl t.unimplemented)
 
+module ST = struct
+  type sig_creation_time = [`sig_creation_time]
+  type b
+
+  type _ subpkt_tag =
+  | Sig_creation_time : sig_creation_time -> sig_creation_time subpkt_tag
+  | B : b -> b subpkt_tag
+end
+module Validity = struct
+  type for_uid =
+    Valid : [< `sig_creation_time] -> for_uid
+  type for_subkey
+  type for_all
+  let validate (type context)
+      (a : context ST.subpkt_tag) : for_uid option =
+    match a with
+    | ST.Sig_creation_time tag -> Some (Valid tag)
+    | _ -> None
+end
+(*
+module K = struct
+  open Gmap.Order
+  type 'a t = 'a ST.subpkt_tag
+
+  let hash (type x) : x t -> int = function
+    | ST.Sig_creation_time _ -> 0
+    | ST.B _ -> 1
+
+  let compare : type a b. a t -> b t -> (a,b) Gmap.Order.t =
+    fun (t1:a t) (t2 : b t) ->
+      Lt
+(*      let h1 : int = hash t1 and h2 : int= hash t2 in
+      if h1 < h2 then
+        (Lt : (a,b) Gmap.Order.t)
+      else (if h1 = h2 then
+              (Eq  : (b,b) Gmap.Order.t)
+            else (Gt : (a,b) Gmap.Order.t) )*)
+
+  let pp : type a. Format.formatter -> a t -> a -> unit = fun fmt t v ->
+    Fmt.pf fmt "K.pp"
+end
+
+module GM = Gmap.Make(K)
+*)
 type signature_subpacket_tag =
   | Signature_creation_time
   | Signature_expiration_time
@@ -578,27 +622,32 @@ let nocrypto_poly_variant_of_hash_algorithm = function
                            algorithm %d to nocrypto" (Char.code c))
 
 let nocrypto_module_of_hash_algorithm algo :
-  ((module Nocrypto.Hash.S),[> ]) result =
-  nocrypto_poly_variant_of_hash_algorithm algo >>| Nocrypto.Hash.module_of
+  ((module Mirage_crypto.Hash.S),[> ]) result =
+  nocrypto_poly_variant_of_hash_algorithm algo >>| Mirage_crypto.Hash.module_of
 
 type digest_finalizer = unit -> Cs.t
 type digest_feeder = (Cs.t -> unit) * digest_finalizer
 
-let digest_callback hash_algo: (digest_feeder, [> ]) result =
+let digest_callback hash_algo: (digest_feeder, [> `Msg of string]) result =
   nocrypto_module_of_hash_algorithm hash_algo >>= fun m ->
   let module H = (val (m)) in
-  let t = ref H.empty in
-  let debug_id = Nocrypto.Rng.Int.gen 99999 in
-  let feeder cs =
-    (t := H.feed !t (Cs.to_cstruct cs))
-    |> log_msg
+  let state = ref H.empty in
+  let debug_id =
+    let i = Mirage_crypto_rng.generate 4 in
+    Cstruct.LE.get_uint16 i 0
+  in
+  let feeder cs : unit =
+    state := (H.feed !state (Cs.to_cstruct cs)) ;
+    log_msg
       (fun m -> m "@[<v>%s:@ %a [%0x] hashing %d bytes:@ %a@]"
           __LOC__
           pp_hash_algorithm hash_algo
           debug_id (* used to keep track of ctx in debug output *)
-          (Cs.len cs) Cs.pp_hex cs)
-  in Ok (feeder,
-        (fun () -> H.get !t |> Cs.of_cstruct))
+          (Cs.len cs) Cs.pp_hex cs) () ;
+    ()
+  in
+  let ret : digest_feeder = feeder, (fun () -> H.get !state |> Cs.of_cstruct) in
+  Ok ret
 
 let compute_digest hash_algo to_be_hashed =
   digest_callback hash_algo >>= fun (feed, get) ->
@@ -683,10 +732,10 @@ let key_byte_size_of_symmetric_algorithm = function
       pp_symmetric_algorithm unknown
 
 let module_of_symmetric_algorithm algo :
-  ((module Nocrypto.Cipher_block.S.ECB),[> ]) result =
+  ((module Mirage_crypto.Cipher_block.S.ECB),[> ]) result =
   match algo with
   | AES128 | AES192 | AES256 ->
-    Ok (module Nocrypto.Cipher_block.AES.ECB)
+    Ok (module Mirage_crypto.Cipher_block.AES.ECB)
   | unknown -> R.error_msgf "Can't instantiate crypto module for %a"
                  pp_symmetric_algorithm unknown
 
@@ -783,7 +832,7 @@ let cs_of_mpi_no_header mpi : Cs.t =
 
 let mpis_are_prime lst =
   let non_primes =
-    List.find_all (fun mpi -> not @@ Nocrypto.Numeric.pseudoprime mpi) lst
+    List.find_all (fun mpi -> 0 == Z.probab_prime mpi 10) lst
   in
   if non_primes <> [] then begin
     Logs.debug (fun m -> m "MPIs are not prime: %a"
@@ -922,6 +971,8 @@ let serialize_packet_length_uint32 (len : Uint32.t) =
     converted
   | Four_octet -> (*This is a V4 "five octet": *)
     Cs.concat [Cs.make_uint8 0xff ; Cs.BE.create_uint32 len]
+  | Indeterminate_length ->
+    failwith "TODO ensure we don't make indeterminate length packets, ever"
 
 let serialize_packet_length_int i =
   (* TODO guard exception *)
@@ -942,50 +993,65 @@ let packet_length_type_of_int needle =
   find_enum_sumtype needle packet_length_type_enum
 
 let v4_packet_length_of_cs (e:'e) (buf : Cs.t)
-  : (Usane.Uint16.t * Usane.Uint32.t, 'e) result =
+  : ([`Final|`Partial] * Usane.Uint16.t * Usane.Uint32.t, 'e) result =
   (* see https://tools.ietf.org/html/rfc4880#section-4.2.2 *)
+  (* this function returns a tuple of bytes consumed during the length parsing
+     and the remaining length of the packet.*)
   Cs.e_get_char e buf 0 >>= fun first_c ->
   let first = int_of_char first_c in
   match first_c with
-  | ('\000'..'\191') -> Ok (1 , Uint32.of_int first)
+  | ('\000'..'\191') -> Ok (`Final, 1 , Uint32.of_int first)
   | ('\192'..'\223') ->
       Cs.get_uint8 buf 1 |> R.reword_error (function _ -> e)
       >>| fun second ->
-      (2 , Uint32.of_int @@ ((first - 192) lsl 8) + second + 192)
-  | ('\224'..'\254') -> Error (`Msg "Unimplemented feature: partial_length")
+      (`Final, 2 , Uint32.of_int @@ ((first - 192) lsl 8) + second + 192)
+  | ('\224'..'\254') ->
+    Logs.warn (fun m -> m "TODO V4 partial_length encountered.");
+    Ok (`Partial, 1, Uint32.of_int (1 lsl (first land 0x1f)))
+  (* RFC 4880: 4.2.2.4: after reading this chunk, at last one length header follows *)
+    (*Error (`Msg "Unimplemented feature: V4 partial_length")*)
   | '\255' ->
       Cs.BE.get_uint32 buf 1 |> R.reword_error (function _ -> e)
-      >>| fun length -> (5, length)
+      >>| fun length -> (`Final, 5, length)
 
 let v3_packet_length_of_cs (e:'e) buf = function
   | One_octet ->
-      Cs.e_get_uint8 e buf 0 >>| Uint32.of_int >>| fun len -> (1, len)
+      Cs.e_get_uint8 e buf 0 >>| Uint32.of_int >>| fun len -> (`Final, 1, len)
   | Two_octet ->
-      Cs.BE.e_get_uint16 e buf 0 >>| fun length -> (2, Uint32.of_int length)
+      Cs.BE.e_get_uint16 e buf 0 >>| fun length -> (`Final, 2, Uint32.of_int length)
   | Four_octet ->
-      Cs.BE.e_get_uint32 e buf 0 >>| fun length -> (4, (length :> Uint32.t))
-  | Indeterminate_length -> Ok (0, Cs.len buf |> Int32.of_int)
+      Cs.BE.e_get_uint32 e buf 0 >>| fun length -> (`Final, 4, (length :> Uint32.t))
+  | Indeterminate_length ->
+    Logs.debug (fun m -> m "v3 indeterminate length, assuming end of file");
+    Ok (`Final, 0, Cs.len buf |> Int32.of_int)
 
-let consume_packet_length length_type buf :
+let consume_packet_length orig_length_type orig_buf :
   (Cs.t * Cs.t,
    [>`Incomplete_packet | `Msg of string])
     result =
-  (* TODO ? make length_type an optional ?v3_length_type arg *)
-  begin match length_type with
-    | None -> v4_packet_length_of_cs `Incomplete_packet buf
-    | Some length -> v3_packet_length_of_cs `Incomplete_packet buf length
-  end >>= fun (start , length) ->
-  match Uint32.to_int length with
-  | None -> error_msg
-              (fun m -> m "consume_packet_length: %s:@ \
-                           Invalid packet length: %ld" __LOC__ length)
-  | Some length ->
-    Cs.split_result ~start buf length
-    |> R.reword_error (function _ ->  `Incomplete_packet)
-    >>| fun ((header,_) as pair) ->
-    Logs.debug (fun m -> m "@[<v>consume_packet_length: %s:@ %a@]"
-                   __LOC__ Cs.pp_hex header) ;
-    pair
+  let rec consume_partial length_type parts_acc buf =
+    (* TODO ? make length_type an optional ?v3_length_type arg *)
+    begin match length_type with
+      | None -> v4_packet_length_of_cs `Incomplete_packet buf
+      | Some length -> v3_packet_length_of_cs `Incomplete_packet buf length
+    end >>= fun (howmuch, start , length) ->
+    match Uint32.to_int length with
+    | None -> error_msg
+                (fun m -> m "consume_packet_length: %s:@ \
+                             Invalid packet length: %ld" __LOC__ length)
+    | Some 0 when howmuch = `Partial -> error_msg (fun m -> m "wtf")
+    | Some length ->
+      Logs.debug (fun m -> m "consuming %d bytes starting at %d in@,%a" length start Cs.pp_hex buf);
+      Cs.split_result ~start buf length
+      |> R.reword_error (function _ ->  `Incomplete_packet)
+      >>= fun (pkt_body,buf_tl) ->
+      Logs.debug (fun m -> m "@[<v>consume_packet_length: %s: len:%d @ %a@]"
+                     __LOC__ length Cs.pp_hex pkt_body) ;
+      begin match howmuch with
+        | `Final -> Ok (Cs.concat (List.rev (pkt_body::parts_acc)), buf_tl)
+        | `Partial -> consume_partial length_type (pkt_body::parts_acc) buf_tl
+      end
+  in consume_partial orig_length_type [] orig_buf
 
 (* https://tools.ietf.org/html/rfc4880#section-4.2 : Packet Headers *)
 type packet_header =
@@ -1089,8 +1155,8 @@ let char_of_s2k_count count =
      def x2(y): return ( (y >> (int(math.floor(math.log(y,2)))-4)) -16)
      def char_of_count(y): return x1(y) + x2(y)
   *)
-  let to_c count =
-    let log2 v =
+  let [@inline always] to_c count =
+    let [@inline always] log2 v =
       (* see https://graphics.stanford.edu/~seander/bithacks.html#IntegerLog *)
       let (>) a b = if a > b then 1 else 0 in
       let r = (v > 0xFFFF) lsl 4 in
@@ -1112,7 +1178,7 @@ let char_of_s2k_count count =
   then Char.chr code
   else Char.chr @@ to_c @@ s2k_count_of_char @@ Char.chr (code +1)
 
-let dsa_asf_are_valid_parameters ~(p:Nocrypto.Numeric.Z.t) ~(q:Z.t) ~hash_algo
+let dsa_asf_are_valid_parameters ~(p:Z.t) ~(q:Z.t) ~hash_algo
   : (unit,'error) result =
   (* Ideally this function would reside in Nocrypto.Dsa *)
 

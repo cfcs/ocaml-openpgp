@@ -29,12 +29,12 @@ val decrypt : key:Cs.t -> Cs.t ->
     Error if the SHA1 integrity check fails.
 *)
 
-val encrypt : ?g:Nocrypto.Rng.g -> key:Cs.t -> Cs.t ->
+val encrypt : ?g:Mirage_crypto_rng.g -> key:Cs.t -> Cs.t ->
   (Cs.t, [> R.msg]) result
 (** [encrypt ~key plaintext] is [plaintext] encrypted with [key].*)
 
 
-val init_encryption : ?g:Nocrypto.Rng.g -> key:Cs.t ->
+val init_encryption : ?g:Mirage_crypto_rng.g -> key:Cs.t ->
   (encryption t * Cs.t, [> R.msg]) result
 (** [init_encryption ~key] is a tuple of
     (state, initial_output) loaded with [key] that may

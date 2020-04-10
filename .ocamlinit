@@ -6,12 +6,14 @@ open Cs;;
 #require "fmt.top"
 #require "ptime.clock.os.top"
 #require "usane"
-#require "nocrypto"
-#require "nocrypto.unix"
+#require "mirage-crypto"
+#require "mirage-crypto-pk"
 #require "rresult.top"
 open Rresult;;
 #require "checkseum.ocaml"
 #require "decompress"
+#require "gmap"
+
 #mod_use "lib/types.ml"
 #mod_use "lib/uid_packet.ml"
 #mod_use "lib/cfb.ml"

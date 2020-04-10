@@ -27,9 +27,33 @@ type packet_type =
   | Public_key_encrypted_session_packet of Public_key_encrypted_session_packet.t
 
 module Signature : sig
+  module SubpacketMap : sig
+    include module type of Signature_packet.SubpacketMap
+    with type 'a t = 'a Signature_packet.SubpacketMap.t
+  end
   type t
+  type signature_subpacket =
+    | Signature_creation_time of Ptime.t
+    | Signature_expiration_time of Ptime.Span.t
+    | Key_expiration_time of Ptime.Span.t
+    | Key_usage_flags of Types.key_usage_flags
+    | Issuer_fingerprint of Types.openpgp_version * Cs.t
+    | Issuer_keyid of Cs.t (* key id; rightmost 64-bits of sha1 of pk *)
+    | Preferred_hash_algorithms of Types.hash_algorithm list
+    | Preferred_symmetric_algorithms of Types.symmetric_algorithm list
+    | Preferred_compression_algorithms of Types.compression_algorithm list
+    | Embedded_signature of Cs.t (* [t] and [signature_subpacket] are mutually
+                                    recursive due to Embedded_signature containing
+                                    its own [t]. we store the Cs.t and defer
+                                    parsing to a later point. *)
+    | Key_server_preferences of Cs.t
+    | Reason_for_revocation of string
+    | Features of Types.feature list
+    | Unimplemented_subpacket of Types.signature_subpacket_tag * Cs.t
+
   type uid = private { uid : Uid_packet.t
                      ; certifications : Signature_packet.t list}
+
   type user_attribute = private { certifications : Signature_packet.t list ;
                                   attributes : User_attribute_packet.t
                                 }
@@ -104,8 +128,8 @@ module Signature : sig
      (Cs.t -> unit) * Types.digest_finalizer -> (*hash_cb,hash_finalize*)
      (unit (** io callback for reading the data to sign *) ->
          (Cs.t option, [> `Msg of string ] as 'a
-         ) Result.result) ->
-     (t, 'a) Result.result
+         ) result) ->
+     (t, 'a) result
   (** [sign_detached_cb time tsk hash message_paging_f] is a signature over a
       [hash_algo] checksum of the data provided by [message_paging_f],
       signed by [tsk] at [time].
@@ -121,7 +145,7 @@ module Signature : sig
            current_time:Ptime.t ->
            transferable_secret_key ->
            Types.hash_algorithm ->
-           Cs.t -> (t, [> `Msg of string ]) Result.result
+           Cs.t -> (t, [> `Msg of string ]) result
   (** [sign_detached_cs] is the batch (non-streaming) version of
       {!sign_detached_cb}. The underlying implementation is identical.
   *)
@@ -133,17 +157,17 @@ module Signature : sig
       permit decryption/encryption, and the subject key type
       is capable of encryption. Note that KeyUsageFlags is NOT REQUIRED by the
       OpenPGP 4 spec, so if KUF is missing, we assume that encryption is OK.*)
-
 end with type t = Signature_packet.t
+     and type signature_subpacket = Signature_packet.signature_subpacket
 
 val serialize_packet : Types.openpgp_version ->
-  packet_type -> (Cs.t, [> `Msg of string ]) Result.result
+  packet_type -> (Cs.t, [> `Msg of string ]) result
 
 val packet_tag_of_packet : packet_type -> packet_tag_type
 
 val pp_packet : Format.formatter -> packet_type -> unit
 
-val parse_packet_body : ?g:Nocrypto.Rng.g -> packet_tag_type -> Cs.t ->
+val parse_packet_body : ?g:Mirage_crypto_rng.g -> packet_tag_type -> Cs.t ->
   (packet_type
    , [> R.msg | `Incomplete_packet ]
   ) Rresult.result
@@ -155,13 +179,13 @@ val next_packet : Cs.t ->
     ) result
 
 val parse_packets :
-  ?g:Nocrypto.Rng.g ->
+  ?g:Mirage_crypto_rng.g ->
   Cs.t ->
   ((packet_type * Cs.t) list
     , [> `Incomplete_packet | `Msg of string ]) result
 
 val decode_public_key_block :
-  ?g:Nocrypto.Rng.g ->
+  ?g:Mirage_crypto_rng.g ->
   current_time:Ptime.t ->
   ?armored:bool ->
   Cs.t ->
@@ -176,7 +200,7 @@ val decode_public_key_block :
   *)
 
 val decode_secret_key_block :
-  ?g:Nocrypto.Rng.g ->
+  ?g:Mirage_crypto_rng.g ->
            current_time:Ptime.t ->
            ?armored:bool ->
            Cs.t ->
@@ -184,7 +208,7 @@ val decode_secret_key_block :
            , [> Public_key_packet.parse_error ]) result
 
 val decode_detached_signature :
-  ?g:Nocrypto.Rng.g ->
+  ?g:Mirage_crypto_rng.g ->
   ?armored:bool ->
   Cs.t -> (Signature.t, [> `Msg of string])result
 
@@ -195,18 +219,24 @@ type encrypted_message =
     signatures : Signature.t list ;
   }
 
-val decode_message : ?g:Nocrypto.Rng.g -> ?armored:bool -> Cs.t ->
+val decode_message : ?g:Mirage_crypto_rng.g -> ?armored:bool -> Cs.t ->
   (encrypted_message, [> R.msg | Public_key_packet.parse_error ]) result
 (** [decode_message] is the parsed PGP message before decryption.*)
 
 val decrypt_message : current_time:Ptime.t ->
   secret_key:Signature.transferable_secret_key -> encrypted_message ->
-  (Literal_data_packet.final_state * string,
+  (([> `Literal of Literal_data_packet.final_state * string
+    | `Compressed of [> `Literal of
+                          Literal_data_packet.final_state
+                          * string
+                     | `One_pass_signature of Cs.t
+                     | `Signature of Cs.t
+                     ] list])  list,
    [> R.msg | Public_key_packet.parse_error ]) result
 (** [decrypt_message time key msg] is [msg] decrypted with [key],
     honouring [time].*)
 
-val encrypt_message : ?rng:Nocrypto.Rng.g ->
+val encrypt_message : ?rng:Mirage_crypto_rng.g ->
   current_time:Ptime.t ->
   public_keys:Signature.transferable_public_key list -> Cs.t ->
   (encrypted_message, [> R.msg]) result
@@ -239,4 +269,4 @@ val serialize_transferable_public_key :
 val serialize_transferable_secret_key :
   Types.openpgp_version ->
   Signature.transferable_secret_key ->
-  (Cs.t, [> R.msg ]) Result.result
+  (Cs.t, [> R.msg ]) result

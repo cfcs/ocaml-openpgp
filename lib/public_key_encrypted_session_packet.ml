@@ -22,15 +22,8 @@ type t =
 
 type symmetric_key = Types.symmetric_algorithm * Cs.t
 
-(* TODO
-   An implementation MAY accept or use a Key ID of zero as a "wild card"
-   or "speculative" Key ID.  In this case, the receiving implementation
-   would try all available private keys, checking for a valid decrypted
-   session key.  This format helps reduce traffic analysis of messages.
-*)
-
 let pp fmt {key_id ; pk_algo; asf}: unit=
-  Fmt.pf fmt "@[<v>{ key_id = %a;@  pk_algo = %a;@  asf = %a;@ }@]"
+  Fmt.pf fmt "@[<v>{ @[key_id = %a;@ pk_algo = %a;@ asf = %a;@] }@]"
     Cs.pp_hex (Cs.of_string key_id)
     Types.pp_public_key_algorithm pk_algo
     pp_asf asf
@@ -131,9 +124,9 @@ let decrypt (private_key : Public_key_packet.private_key) (t:t) =
        } when pk_algo = public_key_algorithm_of_asf priv_key_asf
     ->
     ( R.of_option ~none:(fun () -> R.error_msg "Decryption failed")
-      @@ ( match Nocrypto.Rsa.PKCS1.decrypt ~mask:`Yes ~key
+      @@ ( match Mirage_crypto_pk.Rsa.PKCS1.decrypt ~mask:`Yes ~key
                    (Types.cs_of_mpi_no_header m_pow_e |> Cs.to_cstruct) with
-         | exception Nocrypto.Rsa.Insufficient_key ->
+         | exception Mirage_crypto_pk.Rsa.Insufficient_key ->
            Logs.err (fun m -> m "Insufficient_key, this should not happen.");
            None
          | other -> other ) ) >>| Cs.of_cstruct
@@ -143,7 +136,18 @@ let decrypt (private_key : Public_key_packet.private_key) (t:t) =
 let create_key ?g symmetric_algo =
   Types.key_byte_size_of_symmetric_algorithm symmetric_algo
   >>= fun key_byte_length ->
-  Ok (symmetric_algo, Nocrypto.Rng.generate ?g key_byte_length |> Cs.of_cstruct)
+  Ok (symmetric_algo,
+      Mirage_crypto_rng.generate ?g key_byte_length |> Cs.of_cstruct)
+
+(* TODO
+   An implementation MAY accept or use a Key ID of zero as a "wild card"
+   or "speculative" Key ID.  In this case, the receiving implementation
+   would try all available private keys, checking for a valid decrypted
+   session key.  This format helps reduce traffic analysis of messages.
+
+   TODO: This is implemented using --hidden-recipient/--hidden-encrypt-to in gpg
+         (or --throw-keyids)
+*)
 
 let create ?g (pk : Public_key_packet.t) (symmetric_key:symmetric_key) =
   let open Public_key_packet in
@@ -154,14 +158,14 @@ let create ?g (pk : Public_key_packet.t) (symmetric_key:symmetric_key) =
       Cs.concat
         [ Types.cs_of_symmetric_algorithm (fst symmetric_key);
           (snd symmetric_key) ;
-          Cs.(Types.two_octet_checksum (snd symmetric_key))
+          Types.two_octet_checksum (snd symmetric_key)
         ] |> Cs.to_cstruct
     in
-    let m_pow_e = Nocrypto.Rsa.PKCS1.encrypt ?g ~key key_container
+    let m_pow_e = Mirage_crypto_pk.Rsa.PKCS1.encrypt ?g ~key key_container
                   |> Cs.of_cstruct
                   |> Types.mpi_of_cs_no_header in
     Ok { asf = RSA_message { m_pow_e } ;
-         key_id = Public_key_packet.v4_key_id pk ;
+         key_id = Public_key_packet.v4_key_id pk ; (* TODO *)
          pk_algo = Public_key_packet.public_key_algorithm_of_asf
              pk.algorithm_specific_data ;
        }

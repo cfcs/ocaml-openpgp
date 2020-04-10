@@ -67,6 +67,9 @@ type 'kind t =
   |  In_memory_t : final_state * string list -> in_memory t
   (*  constraint 'kind = [< streaming | in_memory ]*)
 
+let _ = (* TODO this gets rid of a build warning *)
+  let v x = Streaming_t x in v
+
 let pp_final_state fmt { format ; filename ; time} =
   Fmt.pf fmt "{ @[<v>format: %a@ \
               filename: %S@ \

@@ -9,6 +9,39 @@ let cs_of_file name =
   (* TODO this is duplicated in opgp.ml ... *)
   Fpath.of_string name >>= cs_of_fpath
 
+type config =
+  { global : Fpath.t list ; (* path keyring of globally *)
+    repos : (Fpath.t * Fpath.t) list
+  }
+
+let parse_config () =
+  Bos.OS.Dir.user () >>= fun homedir ->
+  Bos.OS.File.read_lines
+    Fpath.(add_seg (add_seg homedir ".opgp") "git") >>= fun lines ->
+  let config_line_count, config = List.fold_left (fun (line_no, state) line ->
+      succ line_no,
+      let split = String.split_on_char ' ' line in
+      match split with
+      | "global"::tl ->
+        state >>= fun state ->
+        Ok {state with
+            global = ((Fpath.of_string @@ String.concat " " tl
+                      )|> R.get_ok) :: state.global }
+      | "repo"::repo_path::tl ->
+        state >>= fun state ->
+        Ok {state with
+            repos = ((repo_path |> Fpath.of_string |> R.get_ok) ,
+                     (String.concat " " tl) |> Fpath.of_string |> R.get_ok
+                    ) :: state.repos
+           }
+      | _ ->
+        Logs.err (fun m ->
+            m "ignoring unknown stuff at ~/.opgp/git line %d" line_no);
+        state
+    ) (0, Ok {global = []; repos = []}) lines in
+  Logs.debug (fun m -> m "parsed %d lines of config" config_line_count);
+  Ok config
+
 let verify_git_signature target_filename =
   let current_time = Ptime_clock.now () in
   let rec read_until_two_newlines = function
