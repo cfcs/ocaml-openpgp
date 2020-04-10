@@ -609,7 +609,7 @@ let e_log_ptime_plus_span_is_smaller err_cb (base,span) current_time =
   >>= fun comp ->
   true_or_error (-1 = comp) err_cb
 
-let nocrypto_poly_variant_of_hash_algorithm = function
+let mirage_crypto_poly_variant_of_hash_algorithm = function
   | MD5 -> Error (`Msg "MD5 is deprecated and disabled for security reasons")
   | SHA1 -> Ok `SHA1
   | SHA224 -> Ok `SHA224
@@ -619,18 +619,14 @@ let nocrypto_poly_variant_of_hash_algorithm = function
   | RIPEMD160 -> Error (`Msg "RIPE-MD/160 not implemented")
   | Unknown_hash c ->
     error_msg (fun m -> m "can't give unimplemented hash \
-                           algorithm %d to nocrypto" (Char.code c))
-
-let nocrypto_module_of_hash_algorithm algo :
-  ((module Mirage_crypto.Hash.S),[> ]) result =
-  nocrypto_poly_variant_of_hash_algorithm algo >>| Mirage_crypto.Hash.module_of
+                           algorithm %d to mirage-crypto" (Char.code c))
 
 type digest_finalizer = unit -> Cs.t
 type digest_feeder = (Cs.t -> unit) * digest_finalizer
 
 let digest_callback hash_algo: (digest_feeder, [> `Msg of string]) result =
-  nocrypto_module_of_hash_algorithm hash_algo >>= fun m ->
-  let module H = (val (m)) in
+  mirage_crypto_poly_variant_of_hash_algorithm hash_algo >>= fun m ->
+  let module H = (val Mirage_crypto.Hash.module_of m) in
   let state = ref H.empty in
   let debug_id =
     let i = Mirage_crypto_rng.generate 4 in
@@ -1178,12 +1174,7 @@ let char_of_s2k_count count =
   then Char.chr code
   else Char.chr @@ to_c @@ s2k_count_of_char @@ Char.chr (code +1)
 
-let dsa_asf_are_valid_parameters ~(p:Z.t) ~(q:Z.t) ~hash_algo
-  : (unit,'error) result =
-  (* Ideally this function would reside in Nocrypto.Dsa *)
-
-  let mpi_error = msg_of_invalid_mpi_parameters [p;q] in
-
+let dsa_good_hash ~(q:Z.t) ~hash_algo : (unit,'error) result =
   (* From RFC 4880 (we whitelist these parameters): *)
   (*  DSA keys MUST also be a multiple of 64 bits, *)
   (*  and the q size MUST be a multiple of 8 bits. *)
@@ -1191,25 +1182,15 @@ let dsa_asf_are_valid_parameters ~(p:Z.t) ~(q:Z.t) ~hash_algo
   (*  2048-bit key, 224-bit q, SHA-224, SHA-256, SHA-384, or SHA-512 hash *)
   (*  2048-bit key, 256-bit q, SHA-256, SHA-384, or SHA-512 hash *)
   (*  3072-bit key, 256-bit q, SHA-256, SHA-384, or SHA-512 hash *)
-  begin match Z.numbits p , Z.numbits q, hash_algo with
-    | 1024 , 160 ,(SHA1|SHA224|SHA256|SHA384|SHA512) -> R.ok ()
-    | 2048 , 224 ,(SHA224|SHA256|SHA384|SHA512) -> R.ok ()
-    | (2048|3072), 256 ,(SHA256|SHA384|SHA512) -> R.ok ()
-    | bits_p , bits_q , _ ->
-      Logs.debug (fun m -> m "failing dsa param checks algo: %a p:%d q:%d"
-                     pp_hash_algorithm hash_algo bits_p bits_q) ;
-      Error mpi_error
-  end >>= fun () ->
-
-  (* - q : q < p *)
-  e_true mpi_error (-1 = compare q p) >>= fun () ->
-
-  (* - p,q : must be prime: *)
-  mpis_are_prime [p;q] >>= fun () ->
-
-  (* - q : must be (prime) divisor of p-1 : *)
-  e_true mpi_error Z.(equal zero (rem (pred p) q))
-
+  match Z.numbits q, hash_algo with
+  | 160 ,(SHA1|SHA224|SHA256|SHA384|SHA512) -> R.ok ()
+  | 224 ,(SHA224|SHA256|SHA384|SHA512) -> R.ok ()
+  | 256 ,(SHA256|SHA384|SHA512) -> R.ok ()
+  | bits_q , _ ->
+    Logs.debug (fun m -> m "failing dsa param checks algo: %a q:%d"
+                   pp_hash_algorithm hash_algo bits_q) ;
+    Rresult.R.error_msgf "DSA key %d not allowed with hash %a"
+      bits_q pp_hash_algorithm hash_algo
   (* TODO - g : g = h^(p-1)/q mod p *)
   (* TODO rest of http://csrc.nist.gov/groups/STM/cavp/documents/dss/DSAVS.pdf *)
 

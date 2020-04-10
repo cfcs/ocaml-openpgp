@@ -617,7 +617,7 @@ struct
     | Public_key_packet.RSA_privkey_asf key ->
       Logs.debug (fun m -> m "sign: signing digest with RSA key") ;
 
-      nocrypto_poly_variant_of_hash_algorithm hash_algorithm >>| fun hash ->
+      mirage_crypto_poly_variant_of_hash_algorithm hash_algorithm >>| fun hash ->
         (RSA_sig_asf { m_pow_d_mod_n =
                           Mirage_crypto_pk.Rsa.PKCS1.sign ~mask:`Yes
                           ~hash
