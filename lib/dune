@@ -1,7 +1,7 @@
 (library
 	(name openpgp)
 	(public_name openpgp)
-	(libraries base64 cs cstruct decompress.de fmt logs gmap
+	(libraries base64 cs cstruct decompress fmt logs gmap
 	mirage-crypto mirage-crypto-pk mirage-crypto-rng
 	ptime result rresult usane zarith)
 	(wrapped false)

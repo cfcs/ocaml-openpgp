@@ -26,24 +26,24 @@ let decompress_common input_ro =
   in
 
   let open Decompress in
-  let window = Window.create ~witness:B.bytes in
+  let window = Window.create ~witness:Buffer.bytes in
   input_temp, output_temp, refill, flush, window, final_output
 
 let decompress_zlib input_ro =
   let input_temp, output_temp, refill, flush, window, final_output =
     decompress_common input_ro in
-  let open Decompress in
-  Zlib_inflate.bytes input_temp output_temp
-    refill flush Zlib_inflate.(default ~witness:B.bytes window)
+  Decompress.(Zlib_inflate.bytes input_temp output_temp
+                refill flush Zlib_inflate.(default ~witness:Buffer.bytes
+                                             (window ~crc:Window.adler32)))
   |> R.reword_error (fun _ -> R.msg "ZLIB inflation failed")
   >>| fun _ -> Buffer.contents final_output
 
 let decompress_zip input_ro =
   let input_temp, output_temp, refill, flush, window, final_output =
     decompress_common input_ro in
-  let open Decompress in
-  RFC1951_inflate.bytes input_temp output_temp
-    refill flush RFC1951_inflate.(default ~witness:B.bytes window)
+  Decompress.(RFC1951_inflate.bytes input_temp output_temp
+                refill flush RFC1951_inflate.(default ~witness:Buffer.bytes
+                                                (window ~crc:Window.none)))
   |> R.reword_error (fun _ -> R.msg "RFC1951:ZIP inflation failed")
   >>| fun _ -> Buffer.contents final_output
 

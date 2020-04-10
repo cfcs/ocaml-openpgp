@@ -3,5 +3,5 @@
 (public_name opgp)
 (package openpgp)
 (modules opgp)
-(libraries bos cmdliner cs fmt fpath logs mrmime openpgp result rresult)
+(libraries bos cmdliner cs fmt fpath logs mrmime openpgp result rresult mirage-crypto-rng mirage-crypto-rng.unix ptime ptime.clock.os fmt.cli fmt.tty logs.fmt logs.cli)
 )

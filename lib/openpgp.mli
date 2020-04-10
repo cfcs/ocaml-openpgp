@@ -167,7 +167,7 @@ val packet_tag_of_packet : packet_type -> packet_tag_type
 
 val pp_packet : Format.formatter -> packet_type -> unit
 
-val parse_packet_body : ?g:Mirage_crypto_rng.g -> packet_tag_type -> Cs.t ->
+val parse_packet_body : packet_tag_type -> Cs.t ->
   (packet_type
    , [> R.msg | `Incomplete_packet ]
   ) Rresult.result
@@ -179,13 +179,11 @@ val next_packet : Cs.t ->
     ) result
 
 val parse_packets :
-  ?g:Mirage_crypto_rng.g ->
   Cs.t ->
   ((packet_type * Cs.t) list
     , [> `Incomplete_packet | `Msg of string ]) result
 
 val decode_public_key_block :
-  ?g:Mirage_crypto_rng.g ->
   current_time:Ptime.t ->
   ?armored:bool ->
   Cs.t ->
@@ -200,7 +198,6 @@ val decode_public_key_block :
   *)
 
 val decode_secret_key_block :
-  ?g:Mirage_crypto_rng.g ->
            current_time:Ptime.t ->
            ?armored:bool ->
            Cs.t ->
@@ -208,7 +205,6 @@ val decode_secret_key_block :
            , [> Public_key_packet.parse_error ]) result
 
 val decode_detached_signature :
-  ?g:Mirage_crypto_rng.g ->
   ?armored:bool ->
   Cs.t -> (Signature.t, [> `Msg of string])result
 
@@ -219,7 +215,7 @@ type encrypted_message =
     signatures : Signature.t list ;
   }
 
-val decode_message : ?g:Mirage_crypto_rng.g -> ?armored:bool -> Cs.t ->
+val decode_message : ?armored:bool -> Cs.t ->
   (encrypted_message, [> R.msg | Public_key_packet.parse_error ]) result
 (** [decode_message] is the parsed PGP message before decryption.*)
 

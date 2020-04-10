@@ -217,7 +217,7 @@ let test_integrity_with_algo algo target_hashes : unit =
     let seed = Cs.of_string "a deterministic seed 9e5cbce8"
                |> Cs.to_cstruct
     in
-    Nocrypto.Rng.create ~seed (module Nocrypto.Rng.Generators.Fortuna) in
+    Mirage_crypto_rng.create ~seed (module Mirage_crypto_rng.Fortuna) in
   (
     (Public_key_packet.generate_new ~current_time ~g algo >>= fun root_sk ->
      Public_key_packet.generate_new ~current_time ~g algo >>= fun subkey_sk ->
@@ -300,9 +300,9 @@ let test_cfb_fixed () : unit =
     Alcotest.(check a_cs) "matches our fixed test vector" plain plain_b
 
 let test_cfb_internal () : unit =
-  let key = Cs.of_cstruct (Nocrypto.Rng.generate 32) in
+  let key = Cs.of_cstruct (Mirage_crypto_rng.generate 32) in
   for plain_len = 0 to 1000 do
-    let plain = Nocrypto.Rng.generate plain_len |> Cs.of_cstruct in
+    let plain = Mirage_crypto_rng.generate plain_len |> Cs.of_cstruct in
     begin match begin
       Cfb.encrypt ~key plain >>= fun ciphertext_a ->
       Cfb.decrypt ~key ciphertext_a
@@ -388,7 +388,7 @@ let tests =
   ]
 
 let () =
-  Nocrypto_entropy_unix.initialize() ;
+  Mirage_crypto_rng_unix.initialize() ;
   Logs.set_reporter @@ Logs_fmt.reporter ~dst:Format.std_formatter () ;
   Logs.(set_level @@ Some Debug);
   Alcotest.run "ocaml-openpgp test suite" tests
