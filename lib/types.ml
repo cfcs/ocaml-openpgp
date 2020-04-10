@@ -609,7 +609,7 @@ let e_log_ptime_plus_span_is_smaller err_cb (base,span) current_time =
   >>= fun comp ->
   true_or_error (-1 = comp) err_cb
 
-let nocrypto_poly_variant_of_hash_algorithm = function
+let mirage_crypto_poly_variant_of_hash_algorithm = function
   | MD5 -> Error (`Msg "MD5 is deprecated and disabled for security reasons")
   | SHA1 -> Ok `SHA1
   | SHA224 -> Ok `SHA224
@@ -619,18 +619,14 @@ let nocrypto_poly_variant_of_hash_algorithm = function
   | RIPEMD160 -> Error (`Msg "RIPE-MD/160 not implemented")
   | Unknown_hash c ->
     error_msg (fun m -> m "can't give unimplemented hash \
-                           algorithm %d to nocrypto" (Char.code c))
-
-let nocrypto_module_of_hash_algorithm algo :
-  ((module Mirage_crypto.Hash.S),[> ]) result =
-  nocrypto_poly_variant_of_hash_algorithm algo >>| Mirage_crypto.Hash.module_of
+                           algorithm %d to mirage-crypto" (Char.code c))
 
 type digest_finalizer = unit -> Cs.t
 type digest_feeder = (Cs.t -> unit) * digest_finalizer
 
 let digest_callback hash_algo: (digest_feeder, [> `Msg of string]) result =
-  nocrypto_module_of_hash_algorithm hash_algo >>= fun m ->
-  let module H = (val (m)) in
+  mirage_crypto_poly_variant_of_hash_algorithm hash_algo >>= fun m ->
+  let module H = (val Mirage_crypto.Hash.module_of m) in
   let state = ref H.empty in
   let debug_id =
     let i = Mirage_crypto_rng.generate 4 in

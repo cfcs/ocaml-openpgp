@@ -392,7 +392,7 @@ The signature was not signed by this public key.|}
       | Public_key_packet.RSA_pubkey_encrypt_or_sign_asf pub
       ), RSA_sig_asf {m_pow_d_mod_n} ->
       (* TODO validate parameters? *)
-      nocrypto_poly_variant_of_hash_algorithm t.hash_algorithm
+      mirage_crypto_poly_variant_of_hash_algorithm t.hash_algorithm
       >>= fun hash_algo ->
         let()= Logs.debug (fun m ->
           m "Trying to verify computed %a digest\n%s\n against \
