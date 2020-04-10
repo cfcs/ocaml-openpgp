@@ -378,10 +378,8 @@ The signature was not signed by this public key.|}
                 t.algorithm_specific_data with
     | Public_key_packet.DSA_pubkey_asf key, DSA_sig_asf {r;s;} ->
       Logs.debug (fun m -> m "Trying to verify a DSA signature") ;
-      dsa_asf_are_valid_parameters ~p:key.Mirage_crypto_pk.Dsa.p
-                                   ~q:key.Mirage_crypto_pk.Dsa.q
-                                   ~hash_algo:t.hash_algorithm
-      >>= fun () ->
+      dsa_good_hash ~q:key.Mirage_crypto_pk.Dsa.q
+        ~hash_algo:t.hash_algorithm >>= fun () ->
       let cs_r = cs_of_mpi_no_header r |> Cs.to_cstruct in
       let cs_s = cs_of_mpi_no_header s |> Cs.to_cstruct in
       e_true `Invalid_signature

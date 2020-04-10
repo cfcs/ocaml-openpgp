@@ -179,24 +179,17 @@ let parse_dsa_asf buf : (public_key_asf * Cs.t, 'error) result =
   consume_mpi buf >>= fun (q , buf) ->
   consume_mpi buf >>= fun (gg , buf) ->
   consume_mpi buf >>= fun (y , buf_tl) ->
-
   (* TODO validation of gg and y? *)
   (* TODO Z.numbits gg *)
-  (* TODO check y < p *)
-
-  (* TODO the public key doesn't contain the hash algo; the signature does *)
-  dsa_asf_are_valid_parameters ~p ~q ~hash_algo:SHA512 >>= fun () ->
-
-  Mirage_crypto_pk.Dsa.pub ~p ~q ~gg ~y () >>| fun pk ->
+  Mirage_crypto_pk.Dsa.pub ~fips:true ~p ~q ~gg ~y () >>| fun pk ->
   (DSA_pubkey_asf pk), buf_tl
 
 let parse_secret_dsa_asf {Mirage_crypto_pk.Dsa.p;q;gg;y} buf
   : (private_key_asf * Cs.t, [> `Msg of string ] ) result =
   (* Algorithm-Specific Fields for DSA secret keys:
      - MPI of DSA secret exponent x. *)
-  (* TODO validate parameters *)
   consume_mpi buf >>= fun (x,tl) ->
-  Mirage_crypto_pk.Dsa.priv ~x ~p ~q ~gg ~y () >>| fun sk ->
+  Mirage_crypto_pk.Dsa.priv ~fips:true ~x ~p ~q ~gg ~y () >>| fun sk ->
   DSA_privkey_asf sk, tl
 
 let parse_secret_elgamal_asf (_:'pk) buf =
