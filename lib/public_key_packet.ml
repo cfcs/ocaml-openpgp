@@ -67,90 +67,14 @@ let cs_of_public_key_asf asf =
   end
   |> cs_of_mpi_list
 
-let rsa_q_prime ~p ~q =
-  (* here because nocrypto's sk.q' is some other number?? *)
-  Logs.warn (fun m -> m "TODO should this RSA ((p**-1) %% q) be blinded??") ;
-  Z.invert p q
-
-let rsa_d_secret_exponent ~e ~p ~q =
-  (* here because nocrypto's sk.d seems to be some other number?? *)
-  Logs.warn (fun m -> m "TODO should this RSA d computation be blinded?");
-  Z.invert e @@ Z.lcm (Z.pred p) (Z.pred q)
-
-(*
-let factor ~e ~n =
-  let xxx =
-    let e,k,m = 100, 100, 100 in
-    let p = Z.of_int 2 in
-    let b = Nocrypto.Rng.Z.gen n in
-    let g = ref 1 in
-    let q = ref 1 in
-    let it = ref (Z.of_int 2) in
-    while (!g = 1) do
-      let e = ((Z.numbits n) / (Z.numbits p)) + 1 in ();
-    done
-  in
-  let prime_decomposition x =
-    let rec inner c p =
-      if Z.lt p (Z.sqrt c) then
-        [p]
-      else if Z.equal (Z.(mod) p c) Z.zero then
-        c :: inner c (Z.div p c)
-      else
-        inner (Z.succ c) p
-    in
-    inner (Z.succ (Z.succ Z.zero)) x
-  in
-  let pub_exp = e in
-  let modulus = n in
-  let next_prime = ref (Z.sqrt modulus) in
-  let removed = ref 0 in
-  () (*while removed <> 0 do
-    next_prime := Z.next_prime next_prime ;
-    removed := Z.rem
-
-  done*)
-*)
-
-let check_prime name zt =
-  let pred_and_halved = Z.(div (pred zt) (of_int 2)) in (* (zt-1)/2 *)
-  (*let four_p_minus_one = Z.(pred (mul zt (of_int 4))) in (* (4(zt)-1 *)*)
-  let probab = Z.probab_prime pred_and_halved 25 in
-  Logs.warn (fun m -> m "%s: probab: %d" name probab)
-
 let cs_of_secret_key_asf asf =
   Logs.debug (fun m -> m "cs_of_secret_key_asf called") ;
   begin match asf with
     | Elgamal_privkey_asf {x} -> [x]
     | DSA_privkey_asf {Mirage_crypto_pk.Dsa.x ; _} -> [x]
-    | RSA_privkey_asf {Mirage_crypto_pk.Rsa.d; p; q; e; n; _} ->
-      (*Mirage_crypto_pk.Rsa.priv_of_primes ~e ~p:q ~q:p ;*)
-      let whatever_d =
-        Z.(d mod
-           (div (mul (pred p) (pred q)) (succ one))) in
-      check_prime "p" p ;
-      check_prime "q" p ;
-      (* TODO
-let p_safe = Nocrypto.Numeric.pseudoprime Z.(div (pred p) (succ one)) in
-      let q_safe = Nocrypto.Numeric.pseudoprime Z.(div (pred q) (succ one)) in
-      *)
-      let p_safe = false and q_safe = false in
-      Logs.warn (fun m ->
-          m "e: %a@.nocrypto-n:@,%a@,nocrypto-p:@,%a@,nocrypto-q:%a@,m-d:@,%a@,j-d:@,%a@,nocrypto-d:@,%a\
-             @,p_safe: %a\
-             @,q_safe: %a"
-            pp_mpi e
-            pp_mpi n
-            pp_mpi p
-            pp_mpi q
-            pp_mpi whatever_d
-            pp_mpi (rsa_d_secret_exponent ~e ~p ~q)
-            pp_mpi d
-            pp_bool p_safe
-            pp_bool q_safe
-        );
-
-      [ rsa_d_secret_exponent ~e ~p ~q ; p; q; rsa_q_prime ~p ~q ]
+    | RSA_privkey_asf {Mirage_crypto_pk.Rsa.d; p; q; q'; _} ->
+      (* since mirage-crypto uses p > q, while openpgp p < q, we rename them *)
+      [ d ; q ; p ; q' ]
   end
   |> cs_of_mpi_list
 
@@ -289,33 +213,19 @@ let parse_secret_rsa_asf
      - MPI of RSA secret prime value p.
      - MPI of RSA secret prime value q (p < q).
      - MPI of u, the multiplicative inverse of p, mod q. *)
-  consume_mpi buf >>= fun (check_d, buf) -> (* "d" *)
-  consume_mpi buf >>= fun (p, buf) ->
+  (* Mirage_crypto_pk.Rsa instead uses p > q, thus we flip the naming here. *)
+  consume_mpi buf >>= fun (d, buf) -> (* "d" *)
   consume_mpi buf >>= fun (q, buf) ->
-  consume_mpi buf >>= fun (check_q', tl) ->
-  (* "u" aka Mirage_crypto_pk.Rsa.priv.q' *)
+  consume_mpi buf >>= fun (p, buf) ->
+  consume_mpi buf >>= fun (q', tl) ->
 
-  let sk_q_prime = rsa_q_prime ~p ~q in
-  true_or_error (Z.equal check_q' sk_q_prime)
-    (fun m -> m "RSA multiplicate inverse of p mod q is incorrect") >>= fun ()->
-
-  let sk_d = rsa_d_secret_exponent ~e ~p ~q in
-  true_or_error (Z.equal check_d sk_d)
-    (fun m -> m "RSA secret exponent incorrect") >>= fun () ->
-
-  Logs.warn (fun m -> m "SKIPPING RSA CHECK p < q BECAUSE ... well, nocrypto doesn't do that.");
-(*  true_or_error (Z.compare p q < 0) (* verify p < q *)
-    (fun m -> m "RSA secret key [%d]p >= [%d]q" (Z.numbits p) (Z.numbits q)
-    ) >>= fun () ->*)
-
-  mpis_are_prime [e;q;p] >>= fun () ->
-
-  (*begin match Nocrypto.Rsa.priv_of_primes ~e ~q ~p with*)
-  (*begin match Nocrypto.Rsa.priv_of_exp ?g ~e ~d:check_d n with*)
-  begin match Mirage_crypto_pk.Rsa.priv_of_primes ~e ~q ~p with
+  (* mirage-crypto uses two more fiels, d mod p and d mod q - we compute them *)
+  let dp = Z.(d mod p)
+  and dq = Z.(d mod q)
+  in
+  begin match Mirage_crypto_pk.Rsa.priv ~e ~d ~n ~p ~q ~dp ~dq ~q' with
     | Error _ as err -> err
-    | exception _ -> Error (msg_of_invalid_mpi_parameters [e;p;q])
-    | Ok sk -> (*TODO comparison p < q*)
+    | Ok sk ->
       (* gpg --list-packets translation key:
          pkey[0] -> pk.n
          skey[2] -> check_d
@@ -323,33 +233,7 @@ let parse_secret_rsa_asf
          skey[4] -> sk.q
          skey[5] -> Z.invert p q
       *)
-
-      let whatever_d = let open Mirage_crypto_pk.Rsa in
-        Z.(sk.d mod
-           (div (mul (pred sk.p) (pred sk.q)) (succ one))) in
-      Logs.warn (fun m ->
-          m "e: %a@.n:@,%a@,p:@,%a@,q:%a@,whatever-d:@,%a@,expected-d:@,%a@,check-d:@,%a@,nocrypto-d:@,%a"
-            pp_mpi sk.e
-            pp_mpi sk.n
-            pp_mpi sk.p
-            pp_mpi sk.q
-            pp_mpi whatever_d
-            pp_mpi sk_d
-            pp_mpi check_d
-            pp_mpi sk.d
-        );
-
-      let open Mirage_crypto_pk.Rsa in
-      (* validate key parameters; check "d" and "u"; "n"="p"*"q" *)
-      true_or_error (Z.equal n sk.n
-      (* TODO && Z.equal check_q' sk.q' && Z.equal check_d sk.d*) )
-        (fun m -> m {|Inconsistent RSA secret key parameters read \
-                      (d;q';computed.d;computed.q'):
-                      {%a}
-                      {pk.n = %a ; sk.p*s.q = %a } |}
-            Fmt.(list ~sep:(unit "; ") pp_mpi) [check_d;check_q';sk.d;sk.q']
-            pp_mpi n pp_mpi sk.n)
-      >>| fun () -> (RSA_privkey_asf sk, tl)
+      Ok (RSA_privkey_asf sk, tl)
   end
 
 let parse_packet_return_extraneous_data (buf:Cs.t)
