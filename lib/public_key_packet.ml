@@ -125,7 +125,7 @@ let cs_of_secret_key_asf asf =
     | DSA_privkey_asf {Mirage_crypto_pk.Dsa.x ; _} -> [x]
     | RSA_privkey_asf {Mirage_crypto_pk.Rsa.d; p; q; e; n; _} ->
       (*Mirage_crypto_pk.Rsa.priv_of_primes ~e ~p:q ~q:p ;*)
-      let whatever_d = let open Mirage_crypto_pk.Rsa in
+      let whatever_d =
         Z.(d mod
            (div (mul (pred p) (pred q)) (succ one))) in
       check_prime "p" p ;
@@ -281,7 +281,7 @@ let parse_secret_elgamal_asf (_:'pk) buf =
   consume_mpi buf >>| fun (x, tl) ->
   Elgamal_privkey_asf {x}, tl
 
-let parse_secret_rsa_asf ?g
+let parse_secret_rsa_asf
     ({Mirage_crypto_pk.Rsa.e; n}:Mirage_crypto_pk.Rsa.pub) buf
   : (private_key_asf * Cs.t, [> `Msg of string]) result =
   (* Algorithm-Specific Fields for RSA secret keys:
@@ -388,7 +388,7 @@ let parse_packet buf =
   Cs.e_is_empty (`Msg "Public key contains extraneous data") buf_tl
   >>| fun () -> pk
 
-let parse_secret_packet ?g buf : (private_key, 'error) result =
+let parse_secret_packet buf : (private_key, 'error) result =
   parse_packet_return_extraneous_data buf >>= fun (public,buf) ->
   Logs.debug (fun m -> m "got the public part of secret key") ;
   Cs.e_split_char `Incomplete_packet buf >>= fun (string_to_key, asf_cs) ->
@@ -400,7 +400,7 @@ let parse_secret_packet ?g buf : (private_key, 'error) result =
   begin match public.algorithm_specific_data with
   | RSA_pubkey_sign_asf pk
   | RSA_pubkey_encrypt_asf pk
-  | RSA_pubkey_encrypt_or_sign_asf pk -> parse_secret_rsa_asf ?g pk asf_cs
+  | RSA_pubkey_encrypt_or_sign_asf pk -> parse_secret_rsa_asf pk asf_cs
   | Elgamal_pubkey_asf _ -> parse_secret_elgamal_asf () asf_cs
   | DSA_pubkey_asf pk -> parse_secret_dsa_asf pk asf_cs
   end

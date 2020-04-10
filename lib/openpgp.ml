@@ -193,7 +193,7 @@ let decode_ascii_armor ~allow_trailing (buf : Cs.t) =
     end) >>= fun () ->
   Ok (pkt_type, decoded, buf)
 
-let parse_packet_body ?g packet_tag pkt_body
+let parse_packet_body packet_tag pkt_body
   : (packet_type, [> `Msg of string | `Incomplete_packet ]) result =
   begin match packet_tag with
     | One_pass_signature_tag ->
@@ -216,9 +216,9 @@ let parse_packet_body ?g packet_tag pkt_body
     | Signature_tag ->
       Signature_packet.parse_packet pkt_body
       >>| fun pkt -> Signature_type pkt
-    | Secret_key_tag -> Public_key_packet.parse_secret_packet ?g pkt_body
+    | Secret_key_tag -> Public_key_packet.parse_secret_packet pkt_body
                         >>| fun pkt -> Secret_key_packet pkt
-    | Secret_subkey_tag -> Public_key_packet.parse_secret_packet ?g pkt_body
+    | Secret_subkey_tag -> Public_key_packet.parse_secret_packet pkt_body
                            >>| fun pkt -> Secret_key_subpacket pkt
     | Trust_packet_tag -> Ok (Trust_packet pkt_body)
     | User_attribute_tag ->
@@ -322,7 +322,7 @@ let next_packet (full_buf : Cs.t) :
     Some (packet_tag , pkt_body, next_packet)
   end
 
-let parse_packets ?g cs : (('ok * Cs.t) list, 'error) result =
+let parse_packets cs : (('ok * Cs.t) list, 'error) result =
   (* TODO: 11.1.  Transferable Public Keys *)
   let rec loop acc cs_tl =
     next_packet cs_tl
@@ -330,7 +330,7 @@ let parse_packets ?g cs : (('ok * Cs.t) list, 'error) result =
       | Some (packet_type , pkt_body, next_tl) ->
         Logs.debug (fun m -> m "Will read a %a packet"
                        pp_packet_tag packet_type) ;
-        parse_packet_body ?g packet_type pkt_body >>= fun parsed ->
+        parse_packet_body packet_type pkt_body >>= fun parsed ->
         Logs.debug (fun m -> m "%a" pp_packet parsed) ;
         loop ((parsed,pkt_body)::acc) next_tl
       | None ->
@@ -1083,19 +1083,19 @@ let armored_or_not ?armored armor_type cs =
                  pp_ascii_packet_type armor_type)
   end
 
-let decode_public_key_block ?g ~current_time ?armored cs
+let decode_public_key_block ~current_time ?armored cs
   : (Signature.transferable_public_key * (packet_type * Cs.t) list
     , [> `Msg of string]) result =
   armored_or_not ?armored Ascii_public_key_block cs
-  >>= (fun pub_cs -> parse_packets ?g pub_cs
+  >>= (fun pub_cs -> parse_packets pub_cs
                      |> R.reword_error Types.msg_of_error)
   >>= (fun pub_cs ->
   Signature.root_pk_of_packets ~current_time pub_cs
   |> R.reword_error Types.msg_of_error)
 
-let decode_secret_key_block ?g ~current_time ?armored cs =
+let decode_secret_key_block ~current_time ?armored cs =
   armored_or_not ?armored Ascii_private_key_block cs
-  >>= parse_packets ?g
+  >>= parse_packets
   >>= (fun sec_cs -> Signature.root_sk_of_packets ~current_time sec_cs )
 
 type encrypted_message =
@@ -1156,13 +1156,14 @@ let decrypt_message ~current_time:_TODO
     else
       Ok (List.rev ((header, packet_body)::acc))
   in
-  let handle_literal (type x) payload =
+  let handle_literal payload =
     Literal_data_packet.parse payload >>= function
     | (Literal_data_packet.In_memory_t (final_state, acc) as pkt) ->
       let msg = String.concat "" acc in
       Logs.debug (fun m -> m "handle_literal: %a@ msg:@,%S"
                      Literal_data_packet.pp pkt msg) ;
       Ok (final_state, msg)
+    | Streaming_t _ -> assert false
   in
   let handle_compressed_packets decompressed =
     let rec loop acc buf =
@@ -1225,11 +1226,11 @@ let encode_message ?(armored=true) (message:encrypted_message) =
   else
     Ok encoded
 
-let decode_message ?g ?armored cs
+let decode_message ?armored cs
   : (encrypted_message, [> R.msg]) result =
   (* TODO RFC 4880 #section-11.3*)
   armored_or_not ?armored Ascii_message cs
-  >>= parse_packets ?g >>= fun packets ->
+  >>= parse_packets >>= fun packets ->
   let rec loop (state : [< `Container | `Data
                         | `Trailing of 'a Encrypted_packet.t * 'b list])
                 ~public packets =
@@ -1271,9 +1272,9 @@ let decode_message ?g ?armored cs
   end ;
   Ok { public_sessions ; symmetric_session = [] ; data; signatures }
 
-let decode_detached_signature ?g ?armored cs =
+let decode_detached_signature ?armored cs =
   armored_or_not ?armored Ascii_signature cs
-  >>= (fun sig_cs -> parse_packets ?g sig_cs
+  >>= (fun sig_cs -> parse_packets sig_cs
                      |> R.reword_error Types.msg_of_error)
   >>= (function
       | [Signature_type detached_sig , _] -> Ok detached_sig
@@ -1284,7 +1285,7 @@ let decode_detached_signature ?g ?armored cs =
       )
 
 let encrypt_message ?rng
-    ~current_time (* time is needed in case we want to sign it*)
+    ~current_time:_ (* time is needed in case we want to sign it*)
     ~(public_keys:Signature.transferable_public_key list)
     payload : (encrypted_message, [> R.msg]) result=
   true_or_error ([] <> public_keys)

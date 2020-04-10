@@ -1,0 +1,4 @@
+(test
+ (name alcotest_lib)
+ (modules alcotest_lib)
+ (libraries openpgp rresult cs fmt cstruct usane fpath bos ptime.clock.os logs ptime mirage-crypto-rng result mirage-crypto mirage-crypto-rng.unix logs.fmt alcotest))

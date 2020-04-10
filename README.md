@@ -35,11 +35,9 @@ The library currently depends on the unreleased `Usane` library for unsigned
 ```bash
 opam pin add -n usane 'https://github.com/hannesm/usane.git'
 opam pin add -n cs 'https://github.com/cfcs/ocaml-cs.git'
-opam pin add -n gmap 'https://github.com/hannesm/gmap.git'
-opam pin add -n mrmime -k git https://github.com/oklm-wsh/MrMime.git
-opam install alcotest bos cmdliner cs cstruct fmt fpath gmap hex logs \
-             mirage-crypto-pk ptime qcheck rresult usane topkg mrmime
-ocaml pkg/pkg.ml build
+opam install --deps-only .
+dune build --profile=release
+dune runtest --profile=release
 ```
 
 ### Roadmap

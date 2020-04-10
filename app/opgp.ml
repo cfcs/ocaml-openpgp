@@ -82,12 +82,12 @@ let do_genkey _ g current_time uid pk_algo =
   >>| fun encoded_pk ->
   Logs.app (fun m -> m "%s" (Cs.to_string encoded_pk))
 
-let do_list_packets _ g target =
+let do_list_packets _ target =
   Logs.info (fun m ->
       m "Listing packets in ascii-armored structure in %s" target) ;
   let res =
     cs_of_file target >>= fun armor_cs ->
-    let arm_typ, raw_cs, todo_leftover =
+    let arm_typ, raw_cs, _todo_leftover =
       Logs.on_error ~level:Logs.Info
         ~use:(fun _ -> None, armor_cs, Cs.empty)
         ~pp:(fun fmt _ ->
@@ -100,7 +100,7 @@ let do_list_packets _ g target =
                     Types.pp_ascii_packet_type) arm_typ
              );
     Logs.info (fun m -> m "@.%a" Cs.pp_hex raw_cs ) ;
-    Openpgp.parse_packets ?g raw_cs
+    Openpgp.parse_packets raw_cs
     >>= fun pkts_tuple ->
     (* TODO Only print hexdump if -v is passed *)
     Logs.app (fun m -> m "Packets:@.|  %a"
@@ -113,11 +113,11 @@ let do_list_packets _ g target =
   in
   res |> R.reword_error Types.msg_of_error
 
-let do_sign _ g current_time secret_file target_file =
+let do_sign _ current_time secret_file target_file =
   (
   cs_of_file secret_file >>= fun sk_cs ->
   cs_of_file target_file >>= fun target_content ->
-  Openpgp.decode_secret_key_block ?g ~current_time sk_cs
+  Openpgp.decode_secret_key_block ~current_time sk_cs
   >>| Types.log_msg (fun m -> m "parsed secret key") >>= fun (tsk,_) ->
   begin match tsk.Openpgp.Signature.uids with
     | hd :: _tl -> Ok hd (* TODO allow user to select? *)
@@ -145,10 +145,10 @@ let do_sign _ g current_time secret_file target_file =
   Logs.app (fun m -> m "%s" encoded) ; Ok ()
   )|> R.reword_error Types.msg_of_error
 
-let do_decrypt _ rng current_time secret_file target_file =
+let do_decrypt _ current_time secret_file target_file =
   ( cs_of_file secret_file >>= fun sk_cs ->
     cs_of_file target_file >>= fun target_content ->
-    Openpgp.decode_secret_key_block ?g:rng ~current_time sk_cs
+    Openpgp.decode_secret_key_block ~current_time sk_cs
     >>| Types.log_msg (fun m -> m "parsed secret key") >>= fun (secret_key,_) ->
     ( Openpgp.decode_message target_content
       |>  R.reword_error Types.msg_of_error)
@@ -163,9 +163,10 @@ let do_decrypt _ rng current_time secret_file target_file =
       ) packets
   ) |> R.reword_error Types.msg_of_error
 
-let do_mail_decrypt _ rng current_time secret_file target_file =
-  ( cs_of_file secret_file
-    >>= Openpgp.decode_secret_key_block ?g:rng ~current_time
+let do_mail_decrypt _ _current_time _secret_file _target_file =
+  assert false
+(*  ( cs_of_file secret_file
+    >>= Openpgp.decode_secret_key_block ~current_time
     |>  R.reword_error Types.msg_of_error
   ) >>= fun (secret_key, _) ->
   Logs.debug (fun m -> m "Going to decode the email in %S" target_file);
@@ -275,7 +276,7 @@ let do_mail_decrypt _ rng current_time secret_file target_file =
     | Some Message.PDiscrete Message.Raw raw_msg ->
       Logs.debug (fun m -> m "Got PGP message body");
       Logs.debug (fun m -> m "msg body:@.%s@." raw_msg);
-      Openpgp.decode_message ?g:rng ~armored:true (Cs.of_string raw_msg)
+      Openpgp.decode_message ~armored:true (Cs.of_string raw_msg)
       (* TODO if we get `Incomplete_packet here we may want to read more
          MIME parts? *)
       |> R.reword_error Types.msg_of_error
@@ -308,6 +309,7 @@ let do_mail_decrypt _ rng current_time secret_file target_file =
   Types.true_or_error (tl_content = [])
     (fun m -> m "This PGP/MIME email seems to have more parts; not \
                  sure how to handle that.")
+*)
 
 let do_encrypt _ rng current_time public_file target_file =
   ( cs_of_file public_file >>= Openpgp.decode_public_key_block ~current_time
@@ -346,17 +348,17 @@ let signature =
   let doc = "Path to a file containing a detached signature" in
   Arg.(required & opt (some non_dir_file) None & info ["signature"] ~docs ~doc)
 
-let rng_seed : Nocrypto.Rng.g option Cmdliner.Term.t =
+let rng_seed : Mirage_crypto_rng.g option Cmdliner.Term.t =
   let doc = {|Manually supply a hex-encoded seed for the pseudo-random number
               generator. Used for debugging; SHOULD NOT be used for generating
               real-world keys!" |} in
-  let random_seed : Nocrypto.Rng.g option Cmdliner.Arg.parser = fun seed_hex ->
+  let random_seed : Mirage_crypto_rng.g option Cmdliner.Arg.parser = fun seed_hex ->
     (Cs.of_hex seed_hex |> R.reword_error
         (fun _ -> Fmt.strf "--rng-seed: invalid hex string: %S" seed_hex)
       >>| fun seed ->
      Logs.warn (fun m -> m "PRNG from seed %a" Cs.pp_hex seed) ;
-     Some (Nocrypto.Rng.create ~seed:(Cs.to_cstruct seed)
-             (module Nocrypto.Rng.Generators.Fortuna))
+     Some (Mirage_crypto_rng.create ~seed:(Cs.to_cstruct seed)
+             (module Mirage_crypto_rng.Fortuna))
     ) |> R.to_presult
   in
   Arg.(value & opt (random_seed, (fun fmt _ -> Format.fprintf fmt "OS PRNG"))
@@ -455,7 +457,7 @@ let decrypt_cmd =
     `P {|Decrypt the $(i,FILE) using the provided secret key.|};
     ]
   in
-  Term.(term_result (const do_decrypt $ setup_log $ rng_seed
+  Term.(term_result (const do_decrypt $ setup_log
                      $ override_timestamp
                      $ sk $ target)),
   Term.info "decrypt" ~doc ~sdocs
@@ -485,7 +487,7 @@ let list_packets_cmd =
     `S Manpage.s_description ;
     `P {|This subcommand is similar in purpose to $(b,gpg --list-packets).|}
   ] in
-  Term.(term_result (const do_list_packets $ setup_log $ rng_seed $ target)),
+  Term.(term_result (const do_list_packets $ setup_log $ target)),
   Term.info "list-packets" ~doc ~sdocs
             ~exits:Term.default_exits ~man
 
@@ -493,7 +495,7 @@ let mail_decrypt_cmd =
   let doc = "Decrypt a PGP/MIME-encrypted email" in
   let man = []
   in
-  Term.(term_result (const do_mail_decrypt $ setup_log $ rng_seed
+  Term.(term_result (const do_mail_decrypt $ setup_log
                      $ override_timestamp
                      $ sk $ target)),
   Term.info "mail-decrypt" ~doc ~sdocs
@@ -513,7 +515,7 @@ let sign_cmd =
     `P "This is similar to GnuPG's $(b,--detach-sign)" ;
     ]
   in
-  Term.(term_result (const do_sign $ setup_log $ rng_seed $ override_timestamp
+  Term.(term_result (const do_sign $ setup_log $ override_timestamp
                                    $ sk $ target)),
   Term.info "sign" ~doc ~exits:Term.default_exits ~man ~sdocs
                    ~man_xrefs:[`Cmd "verify"]
@@ -563,5 +565,5 @@ let cmds = [ verify_cmd ; genkey_cmd; convert_cmd; list_packets_cmd; sign_cmd ;
              decrypt_cmd ; encrypt_cmd; mail_decrypt_cmd ]
 
 let () =
-  Nocrypto_entropy_unix.initialize () ;
+  Mirage_crypto_rng_unix.initialize () ;
   Term.(exit @@ eval_choice help_cmd cmds)

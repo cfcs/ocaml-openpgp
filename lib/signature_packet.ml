@@ -170,8 +170,9 @@ type (_,_) subpacket = (* this stuff is not used atm*)
   | MIssuer_keyid : issuer_keyid -> issuer_keyid subpacket
   | Unimplemented_subpacket :
       (unimplemented_subpacket as 's) -> unimplemented_subpacket subpacket*)
-end
 *)
+end
+
 let signature_subpacket_tag_of_signature_subpacket packet : signature_subpacket_tag =
   match packet with
   | Features _ -> Features
@@ -487,7 +488,7 @@ and serialize_hashed_manual version sig_type pk_algo hash_algo subpacket_data =
 
 and serialize_hashed version {signature_type ; public_key_algorithm
                              ; hash_algorithm ; subpacket_data
-                             ; algorithm_specific_data = _ } =
+                             ; _ } =
   serialize_hashed_manual version signature_type
     public_key_algorithm hash_algorithm (SubpacketMap.to_list subpacket_data)
 
